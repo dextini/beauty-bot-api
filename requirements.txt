@@ -1,4 +1,5 @@
 fastapi
 uvicorn
 aiohttp
+httpx
 aiogram==3.13.1
