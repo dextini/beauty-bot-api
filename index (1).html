@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Beauty Map</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;600&family=DM+Sans:wght@300;400;500&display=swap');
+    :root { --rose:#c8847a;--rose-light:#f5e6e4;--rose-dark:#9e5f57;--cream:#fdf8f5;--text:#2d1f1e;--muted:#8a7070;--white:#fff; }
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'DM Sans',sans-serif;background:var(--cream);color:var(--text);height:100dvh;overflow:hidden;display:flex;flex-direction:column}
+    .header{padding:14px 18px 10px;background:var(--white);box-shadow:0 2px 12px rgba(150,80,70,.08);z-index:100;flex-shrink:0}
+    .header h1{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:600;color:var(--rose-dark)}
+    .header p{font-size:12px;color:var(--muted);margin-top:2px}
+    #map{flex:1;width:100%;min-height:0;z-index:1}
+    .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:200}
+    .overlay.active{display:block}
+    .sheet{position:fixed;bottom:0;left:0;right:0;background:var(--white);border-radius:24px 24px 0 0;z-index:201;transform:translateY(100%);transition:transform .35s cubic-bezier(.32,1,.23,1);max-height:88dvh;overflow-y:auto}
+    .sheet.open{transform:translateY(0)}
+    .handle{width:40px;height:4px;background:#e0d0ce;border-radius:99px;margin:14px auto 0}
+    .master-header{padding:18px 20px 14px;border-bottom:1px solid var(--rose-light)}
+    .avatar{width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,var(--rose-light),#f0d0cc);display:flex;align-items:center;justify-content:center;font-size:28px;float:left;margin-right:14px}
+    .minfo h2{font-family:'Cormorant Garamond',serif;font-size:20px;font-weight:600}
+    .minfo p{font-size:13px;color:var(--muted);margin-top:3px}
+    .tags{margin-top:6px;display:flex;gap:8px;flex-wrap:wrap}
+    .tag{font-size:11px;padding:3px 8px;background:var(--rose-light);color:var(--rose-dark);border-radius:99px}
+    .cf::after{content:'';display:table;clear:both}
+    .section-title{padding:14px 20px 8px;font-size:13px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.8px}
+    .svc{display:flex;align-items:center;padding:12px 20px;border-bottom:1px solid #fdf0ee;cursor:pointer;transition:background .15s}
+    .svc.sel{background:var(--rose-light)}
+    .svc-info{flex:1}
+    .svc-name{font-size:15px}
+    .svc-meta{font-size:12px;color:var(--muted);margin-top:2px}
+    .svc-price{font-size:15px;font-weight:500;color:var(--rose-dark)}
+    .check{width:20px;height:20px;border-radius:50%;border:2px solid #ddd;margin-left:10px;display:flex;align-items:center;justify-content:center;transition:all .15s}
+    .svc.sel .check{background:var(--rose);border-color:var(--rose);color:#fff}
+    .svc.sel .check::after{content:'✓';font-size:11px}
+    .form-wrap{padding:16px 20px 24px;display:none}
+    .fg{margin-bottom:14px}
+    .fg label{display:block;font-size:12px;font-weight:500;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+    .fg input{width:100%;padding:12px 14px;border:1.5px solid #e8d8d6;border-radius:12px;font-size:15px;font-family:'DM Sans',sans-serif;background:var(--cream);color:var(--text);outline:none;transition:border-color .2s}
+    .fg input:focus{border-color:var(--rose)}
+    .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    /* Slots */
+    .slots-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px}
+    .slot{padding:8px 4px;text-align:center;border:1.5px solid #e8d8d6;border-radius:10px;font-size:13px;cursor:pointer;transition:all .15s;background:var(--cream)}
+    .slot:hover{border-color:var(--rose)}
+    .slot.sel{background:var(--rose);border-color:var(--rose);color:#fff;font-weight:500}
+    .slot.busy{opacity:.35;cursor:not-allowed;text-decoration:line-through}
+    .no-slots{text-align:center;padding:20px;color:var(--muted);font-size:14px}
+    .loading-slots{text-align:center;padding:16px;color:var(--muted);font-size:13px}
+    /* Buttons */
+    .btn{width:100%;padding:15px;background:linear-gradient(135deg,var(--rose),var(--rose-dark));color:#fff;border:none;border-radius:14px;font-size:16px;font-family:'DM Sans',sans-serif;font-weight:500;cursor:pointer;margin-top:6px;box-shadow:0 4px 16px rgba(150,80,70,.3)}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    .back{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--rose);cursor:pointer;padding-bottom:14px}
+    .summary{background:var(--rose-light);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:14px}
+    .success{display:none;text-align:center;padding:40px 20px}
+    .success.active{display:block}
+    .success-icon{font-size:64px;margin-bottom:16px}
+    .success h2{font-family:'Cormorant Garamond',serif;font-size:26px;color:var(--rose-dark);margin-bottom:8px}
+    .success p{font-size:14px;color:var(--muted);line-height:1.5}
+  </style>
+</head>
+<body>
+<div class="header"><h1>💅 Beauty Map</h1><p>Найди мастера рядом и запишись</p></div>
+<div id="map"></div>
+<div class="overlay" id="overlay" onclick="closeSheet()"></div>
+<div class="sheet" id="sheet">
+  <div class="handle"></div>
+
+  <!-- Мастер + услуги -->
+  <div id="viewMaster">
+    <div class="master-header cf" id="masterHeader"></div>
+    <div class="section-title">Услуги</div>
+    <div id="servicesList"></div>
+    <div style="padding:14px 20px">
+      <button class="btn" id="btnNext" onclick="goToDate()" disabled>Выбрать дату →</button>
+    </div>
+  </div>
+
+  <!-- Выбор даты и слотов -->
+  <div id="viewDate" style="display:none">
+    <div style="padding:16px 20px 0">
+      <div class="back" onclick="backToMaster()">← Назад</div>
+      <div class="fg">
+        <label>Дата</label>
+        <input type="date" id="bookDate" onchange="loadSlots()" />
+      </div>
+      <div class="section-title" style="padding:0 0 8px">Свободное время</div>
+      <div id="slotsContainer"><div class="loading-slots">Выбери дату 👆</div></div>
+    </div>
+    <div style="padding:14px 20px">
+      <button class="btn" id="btnToForm" onclick="goToForm()" disabled>Далее →</button>
+    </div>
+  </div>
+
+  <!-- Форма -->
+  <div class="form-wrap" id="viewForm">
+    <div class="back" onclick="backToDate()">← Назад</div>
+    <div class="fg"><label>Твоё имя</label><input type="text" id="clientName" placeholder="Например, Алина" /></div>
+    <div class="fg"><label>Телефон (необязательно)</label><input type="tel" id="clientPhone" placeholder="+7..." /></div>
+    <div class="summary" id="bookSummary"></div>
+    <button class="btn" id="btnConfirm" onclick="confirmBooking()">✨ Записаться</button>
+  </div>
+
+  <!-- Успех -->
+  <div class="success" id="viewSuccess">
+    <div class="success-icon">🌸</div>
+    <h2>Запись создана!</h2>
+    <p id="successText"></p>
+  </div>
+</div>
+
+<script>
+const API_URL = 'https://beauty-bot-api-production.up.railway.app';
+const tg = window.Telegram.WebApp;
+tg.ready(); tg.expand();
+
+let masters = [], selMaster = null, selService = null, selSlot = null;
+
+async function api(path) {
+  const r = await fetch(API_URL + path, { headers: { 'ngrok-skip-browser-warning': 'true' } });
+  return r.json();
+}
+
+async function loadMasters() {
+  masters = wait api('/masters');
+  initMap();
+}
+
+function initMap() {
+  const map = L.map('map').setView([55.751244, 37.618423], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
+  const icon = L.divIcon({
+    className: '',
+    html: '<div style="width:22px;height:22px;background:#c8847a;border:3px solid white;border-radius:50%;box-shadow:0 2px 8px rgba(150,80,70,0.5)"></div>',
+    iconSize: [22,22], iconAnchor: [11,11]
+  });
+  masters.forEach(m => {
+    L.marker([m.lat, m.lon], { icon }).addTo(map).bindPopup(
+      `<div style="font-family:sans-serif;min-width:150px">
+        <strong>${m.name}</strong>
+        <p style="font-size:12px;color:#888;margin:4px 0">${m.description||''}</p>
+        <button onclick="openMaster(${m.id})" style="width:100%;margin-top:8px;background:#c8847a;color:white;border:none;border-radius:8px;padding:7px;font-size:13px;cursor:pointer">Записаться →</button>
+      </div>`
+    );
+  });
+}
+
+window.openMaster = function(id) {
+  selMaster = masters.find(m => m.id === id);
+  selService = null; selSlot = null;
+
+  document.getElementById('masterHeader').innerHTML = `
+    <div class="avatar">💅</div>
+    <div class="minfo">
+      <h2>${selMaster.name}</h2>
+      <p>${selMaster.description||''}</p>
+      <div class="tags">
+        <span class="tag">📍 ${selMaster.address}</span>
+        ${selMaster.phone ? `<span class="tag">📞 ${selMaster.phone}</span>` : ''}
+      </div>
+    </div>`;
+
+  document.getElementById('servicesList').innerHTML = selMaster.services.map(s =>
+    `<div class="svc" id="svc-${s.id}" onclick="selSvc(${s.id})">
+      <div class="svc-info"><div class="svc-name">${s.name}</div><div class="svc-meta">⏱ ${s.duration_min} мин</div></div>
+      <div class="svc-price">${s.price} ₽</div>
+      <div class="check"></div>
+    </div>`
+  ).join('');
+
+  document.getElementById('btnNext').disabled = true;
+  showView('viewMaster');
+  openSheet();
+};
+
+function selSvc(id) {
+  selService = selMaster.services.find(s => s.id === id);
+  document.querySelectorAll('.svc').forEach(el => el.classList.remove('sel'));
+  document.getElementById(`svc-${id}`).classList.add('sel');
+  document.getElementById('btnNext').disabled = false;
+}
+
+function goToDate() {
+  selSlot = null;
+  const today = new Date().toISOString().split('T')[0];
+  document.getElementById('bookDate').min = today;
+  document.getElementById('bookDate').value = today;
+  document.getElementById('btnToForm').disabled = true;
+  document.getElementById('slotsContainer').innerHTML = '<div class="loading-slots">Загружаем слоты...</div>';
+  showView('viewDate');
+  loadSlots();
+}
+
+async function loadSlots() {
+  const date = document.getElementById('bookDate').value;
+  if (!date) return;
+  selSlot = null;
+  document.getElementById('btnToForm').disabled = true;
+  document.getElementById('slotsContainer').innerHTML = '<div class="loading-slots">⏳ Загружаем...</div>';
+
+  try {
+    const data = await api(`/masters/${selMaster.id}/slots?date=${date}`);
+    if (data.day_off) {
+      document.getElementById('slotsContainer').innerHTML = '<div class="no-slots">🔴 Мастер не работает в этот день</div>';
+      return;
+    }
+    if (!data.slots.length) {
+      document.getElementById('slotsContainer').innerHTML = '<div class="no-slots">😔 Нет свободных слотов на этот день</div>';
+      return;
+    }
+    document.getElementById('slotsContainer').innerHTML =
+      `<div class="slots-grid">${data.slots.map(s =>
+        `<div class="slot" onclick="pickSlot('${s}', this)">${s}</div>`
+      ).join('')}</div>`;
+  } catch(e) {
+    document.getElementById('slotsContainer').innerHTML = '<div class="no-slots">Ошибка загрузки</div>';
+  }
+}
+
+function pickSlot(time, el) {
+  selSlot = time;
+  document.querySelectorAll('.slot').forEach(s => s.classList.remove('sel'));
+  el.classList.add('sel');
+  document.getElementById('btnToForm').disabled = false;
+}
+
+function goToForm() {
+  const date = document.getElementById('bookDate').value;
+  document.getElementById('bookSummary').innerHTML =
+    `<strong>${selService.name}</strong><br>💰 ${selService.price} ₽ · ⏱ ${selService.duration_min} мин<br>📅 ${date} в ${selSlot}<br>👩 ${selMaster.name}`;
+  showView('viewForm');
+}
+
+function backToMaster() { showView('viewMaster'); }
+function backToDate() { showView('viewDate'); }
+
+async function confirmBooking() {
+  const name = document.getElementById('clientName').value.trim();
+  const phone = document.getElementById('clientPhone').value.trim();
+  const date = document.getElementById('bookDate').value;
+  if (!name) { alert('Введи своё имя'); return; }
+
+  const btn = document.getElementById('btnConfirm');
+  btn.disabled = true; btn.textContent = 'Создаём запись...';
+
+  try {
+    const r = await fetch(`${API_URL}/bookings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+      body: JSON.stringify({
+        master_id: selMaster.id, service_id: selService.id,
+        client_name: name, client_telegram_id: String(tg.initDataUnsafe?.user?.id || 'unknown'),
+        client_phone: phone || null, date, time: selSlot
+      })
+    });
+    if (r.status === 409) { alert('Это время уже занято! Выбери другое.'); btn.disabled=false; btn.textContent='✨ Записаться'; return; }
+    if (!r.ok) throw new Error();
+
+    document.getElementById('successText').innerHTML =
+      `<strong>${selService.name}</strong><br>👩 ${selMaster.name}<br>📅 ${date} в ${selSlot}`;
+    showView('viewSuccess');
+
+    tg.sendData(JSON.stringify({ type: 'booking_created', booking: { service_name: selService.name, master_name: selMaster.name, date, time: selSlot } }));
+    setTimeout(() => tg.close(), 3000);
+  } catch(e) {
+    alert('Ошибка. Попробуй ещё раз.');
+    btn.disabled=false; btn.textContent='✨ Записаться';
+  }
+}
+
+function showView(v) {
+  ['viewMaster','viewDate','viewForm','viewSuccess'].forEach(id => {
+    const el = document.getElementById(id);
+    if (id === 'viewSuccess') el.classList.toggle('active', id===v);
+    else el.style.display = id===v ? 'block' : 'none';
+  });
+  document.getElementById('viewForm').style.display = v==='viewForm' ? 'block' : 'none';
+}
+
+function openSheet() { document.getElementById('sheet').classList.add('open'); document.getElementById('overlay').classList.add('active'); }
+function closeSheet() { document.getElementById('sheet').classList.remove('open'); document.getElementById('overlay').classList.remove('active'); }
+
+loadMasters();
+</script>
+</body>
+</html>
