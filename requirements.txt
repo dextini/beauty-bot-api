@@ -1,0 +1,4 @@
+fastapi
+uvicorn
+aiohttp
+aiogram==3.13.1
