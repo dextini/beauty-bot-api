@@ -1,7 +1,3 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import threading
-import sqlite3р
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
