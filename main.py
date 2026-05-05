@@ -22,6 +22,9 @@ DEFAULT_WORK_START = "09:00"
 DEFAULT_WORK_END = "20:00"
 SLOT_INTERVAL = 30
 
+# ID администраторов (замени на свои Telegram ID)
+ADMIN_IDS = [123456789]  # ДОБАВЬ СВОЙ TELEGRAM ID СЮДА!
+
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -79,6 +82,19 @@ def init_db():
             date TEXT NOT NULL,
             UNIQUE(master_id, date),
             FOREIGN KEY (master_id) REFERENCES masters(id)
+        )
+    """)
+
+    # НОВАЯ ТАБЛИЦА ДЛЯ ЗАЯВОК НА РЕГИСТРАЦИЮ
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS register_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id TEXT UNIQUE,
+            name TEXT,
+            address TEXT,
+            phone TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -201,6 +217,68 @@ class BookingIn(BaseModel):
     client_phone: Optional[str]
     date: str
     time: str
+
+
+# ========== НОВЫЕ ЭНДПОИНТЫ ДЛЯ РЕГИСТРАЦИИ МАСТЕРОВ ==========
+
+class RegisterRequest(BaseModel):
+    telegram_id: str
+    name: str
+    address: str
+    phone: str
+
+
+@app.post("/register-request")
+async def register_request(data: RegisterRequest, conn: sqlite3.Connection = Depends(get_db)):
+    """Мастер отправляет заявку на регистрацию"""
+    # Проверяем, нет ли уже такой заявки
+    existing = conn.execute("SELECT id FROM register_requests WHERE telegram_id=?", (data.telegram_id,)).fetchone()
+    if existing:
+        raise HTTPException(status_code=409, detail="Request already exists")
+    
+    conn.execute(
+        "INSERT INTO register_requests (telegram_id, name, address, phone) VALUES (?,?,?,?)",
+        (data.telegram_id, data.name, data.address, data.phone)
+    )
+    conn.commit()
+    return {"status": "ok", "message": "Request sent to admin"}
+
+
+@app.get("/register-requests/pending")
+def get_pending_requests(conn: sqlite3.Connection = Depends(get_db)):
+    """Получить все pending заявки (для админа)"""
+    requests = conn.execute("SELECT * FROM register_requests WHERE status='pending'").fetchall()
+    return [dict(r) for r in requests]
+
+
+@app.post("/approve-master/{telegram_id}")
+def approve_master(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    """Администратор подтверждает заявку и создаёт мастера"""
+    # Получаем заявку
+    request = conn.execute("SELECT * FROM register_requests WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    # Создаём мастера (координаты по умолчанию, мастер потом сможет их изменить)
+    conn.execute(
+        """INSERT INTO masters (name, address, phone, telegram_id, lat, lon, description) 
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (request["name"], request["address"], request["phone"], telegram_id, 55.751244, 37.618423, "Новый мастер")
+    )
+    
+    # Обновляем статус заявки
+    conn.execute("UPDATE register_requests SET status='approved' WHERE telegram_id=?", (telegram_id,))
+    conn.commit()
+    
+    return {"status": "ok", "message": f"Master {request['name']} approved"}
+
+
+@app.delete("/reject-master/{telegram_id}")
+def reject_master(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    """Отклонить заявку"""
+    conn.execute("DELETE FROM register_requests WHERE telegram_id=?", (telegram_id,))
+    conn.commit()
+    return {"status": "ok", "message": "Request rejected"}
 
 
 # ========== ОСНОВНЫЕ ЭНДПОИНТЫ ==========
