@@ -418,6 +418,19 @@ def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
     
     return dict(booking)
 
+@app.patch("/bookings/{booking_id}/status")
+def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
+    """Обновить статус записи (confirmed/cancelled)"""
+    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    
+    conn.execute("UPDATE bookings SET status = ? WHERE id = ?", (status, booking_id))
+    conn.commit()
+    
+    updated = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    return {"status": "ok", "booking_id": booking_id, "new_status": status, "booking": dict(updated)}
+
 
 @app.get("/bookings/master/{master_id}")
 def get_master_bookings(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
