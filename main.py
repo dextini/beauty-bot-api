@@ -82,7 +82,6 @@ def init_db():
         )
     """)
 
-    # Добавляем колонки для существующих БД
     for col in ["telegram_id TEXT", "work_start TEXT DEFAULT '09:00'", "work_end TEXT DEFAULT '20:00'"]:
         try:
             c.execute(f"ALTER TABLE masters ADD COLUMN {col}")
@@ -161,6 +160,7 @@ async def notify_master_with_buttons(master_telegram_id: str, message: str, book
     except Exception as e:
         print(f"Notify error: {e}")
 
+
 async def send_message(telegram_id: str, message: str):
     if not telegram_id or MASTER_BOT_TOKEN == "YOUR_MASTER_BOT_TOKEN":
         return
@@ -174,7 +174,6 @@ async def send_message(telegram_id: str, message: str):
         print(f"Send message error: {e}")
 
 
-# --- Schemas ---
 class ServiceOut(BaseModel):
     id: int
     master_id: int
@@ -203,17 +202,13 @@ class BookingIn(BaseModel):
     date: str
     time: str
 
-class BookingOut(BaseModel):
-    id: int
-    master_id: int
-    service_id: int
-    client_name: str
-    date: str
-    time: str
-    status: str
 
+# ========== ОСНОВНЫЕ ЭНДПОИНТЫ ==========
 
-# --- Routes ---
+@app.get("/")
+def root():
+    return {"status": "Beauty Bot API running 🌸"}
+
 @app.get("/masters", response_model=List[MasterOut])
 def get_masters(conn: sqlite3.Connection = Depends(get_db)):
     masters = conn.execute("SELECT * FROM masters").fetchall()
@@ -310,9 +305,11 @@ def set_master_telegram(master_id: int, telegram_id: str, conn: sqlite3.Connecti
     conn.commit()
     return {"status": "ok"}
 
+
+# ========== ЭНДПОИНТЫ ДЛЯ ЗАПИСЕЙ ==========
+
 @app.post("/bookings")
 async def create_booking(data: BookingIn):
-    # Создаём НОВОЕ соединение в этом потоке
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     
@@ -343,7 +340,6 @@ async def create_booking(data: BookingIn):
         conn.commit()
         booking_id = cursor.lastrowid
         
-        # Уведомляем мастера
         master_tg = master["telegram_id"]
         phone_line = f"\n📞 Телефон: {data.client_phone}" if data.client_phone else ""
         message = (
@@ -358,52 +354,13 @@ async def create_booking(data: BookingIn):
         
         booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
         return dict(booking)
-    
     finally:
-        conn.close()  # Важно закрыть соединение!
+        conn.close()
 
-@app.patch("/bookings/{booking_id}/status")
-async def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
-    booking = conn.execute(
-        """SELECT b.*, m.telegram_id, s.name as service_name
-           FROM bookings b JOIN masters m ON b.master_id=m.id JOIN services s ON b.service_id=s.id
-           WHERE b.id=?""", (booking_id,)
-    ).fetchone()
-    if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
-    conn.execute("UPDATE bookings SET status=? WHERE id=?", (status, booking_id))
-    conn.commit()
-    return {"status": "ok", "booking_id": booking_id, "new_status": status}
-
-@app.get("/bookings/master/{master_id}")
-def get_master_bookings(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    bookings = conn.execute(
-        """SELECT b.*, s.name as service_name, s.price FROM bookings b
-           JOIN services s ON b.service_id=s.id
-           WHERE b.master_id=? AND b.status!='cancelled' ORDER BY b.date, b.time""",
-        (master_id,)
-    ).fetchall()
-    return [dict(b) for b in bookings]
-
-@app.get("/bookings/client/{telegram_id}")
-def get_client_bookings(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    bookings = conn.execute(
-        """SELECT b.*, m.name as master_name, s.name as service_name, s.price
-           FROM bookings b JOIN masters m ON b.master_id=m.id JOIN services s ON b.service_id=s.id
-           WHERE b.client_telegram_id=? ORDER BY b.date DESC, b.time DESC""",
-        (telegram_id,)
-    ).fetchall()
-    return [dict(b) for b in bookings]
-
-@app.get("/")
-def root():
-    return {"status": "Beauty Bot API running 🌸"}
-
-# --- ИСПРАВЛЕННЫЕ ЭНДПОИНТЫ ДЛЯ ЗАПИСЕЙ ---
 
 @app.get("/bookings/{booking_id}")
 def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    """Получить одну запись по ID (для мастера)"""
+    """Получить одну запись по ID"""
     booking = conn.execute(
         """SELECT b.*, m.name as master_name, s.name as service_name, s.price 
            FROM bookings b 
@@ -415,8 +372,8 @@ def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
     
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
-    
     return dict(booking)
+
 
 @app.patch("/bookings/{booking_id}/status")
 def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
@@ -428,8 +385,7 @@ def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection
     conn.execute("UPDATE bookings SET status = ? WHERE id = ?", (status, booking_id))
     conn.commit()
     
-    updated = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
-    return {"status": "ok", "booking_id": booking_id, "new_status": status, "booking": dict(updated)}
+    return {"status": "ok", "booking_id": booking_id, "new_status": status}
 
 
 @app.get("/bookings/master/{master_id}")
