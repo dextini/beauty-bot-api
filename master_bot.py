@@ -32,18 +32,6 @@ async def get_master(telegram_id: str):
     return None
 
 
-async def get_booking_details(booking_id: int):
-    """Получить детали записи"""
-    async with aiohttp.ClientSession() as s:
-        try:
-            async with s.get(f"{API_URL}/bookings/{booking_id}") as r:
-                if r.status == 200:
-                    return await r.json()
-        except Exception as e:
-            logger.error(f"Error getting booking: {e}")
-    return None
-
-
 async def send_message(telegram_id: str, message: str):
     """Отправка сообщения пользователю"""
     if not telegram_id:
@@ -232,7 +220,7 @@ async def help_cmd(message: types.Message):
     )
 
 
-# --- Кнопки подтвердить/отменить (ИСПРАВЛЕНО) ---
+# --- Кнопки подтвердить/отменить (ИСПРАВЛЕНО - без GET запроса) ---
 @dp.callback_query(F.data.startswith("confirm_"))
 async def confirm_booking(callback: types.CallbackQuery):
     booking_id = int(callback.data.split("_")[1])
@@ -245,15 +233,12 @@ async def confirm_booking(callback: types.CallbackQuery):
     
     async with aiohttp.ClientSession() as s:
         try:
-            # Сначала получаем детали записи
-            async with s.get(f"{API_URL}/bookings/{booking_id}") as get_resp:
-                if get_resp.status != 200:
-                    await callback.answer("❌ Запись не найдена", show_alert=True)
-                    return
-                booking = await get_resp.json()
-            
-            # Подтверждаем запись
+            # Прямо отправляем PATCH запрос на подтверждение
             async with s.patch(f"{API_URL}/bookings/{booking_id}/status?status=confirmed") as r:
+                # Получаем текст ответа для диагностики
+                response_text = await r.text()
+                logger.info(f"PATCH response status: {r.status}, body: {response_text}")
+                
                 if r.status == 200:
                     # Обновляем сообщение
                     await callback.message.edit_text(
@@ -261,22 +246,9 @@ async def confirm_booking(callback: types.CallbackQuery):
                         parse_mode="Markdown"
                     )
                     
-                    # Отправляем уведомление клиенту
-                    client_tg_id = booking.get('client_telegram_id')
-                    if client_tg_id:
-                        await send_message(
-                            client_tg_id,
-                            f"🎉 *Запись подтверждена!*\n\n"
-                            f"💅 Услуга: {booking.get('service_name', '')}\n"
-                            f"👩 Мастер: {master['name']}\n"
-                            f"📅 Дата: {booking['date']}\n"
-                            f"🕐 Время: {booking['time']}\n\n"
-                            f"Ждём вас! ✨"
-                        )
-                    
                     await callback.answer("✅ Запись подтверждена!", show_alert=True)
                 else:
-                    await callback.answer("❌ Ошибка при подтверждении", show_alert=True)
+                    await callback.answer(f"❌ Ошибка {r.status}: проверьте логи", show_alert=True)
         except Exception as e:
             logger.error(f"Confirm booking error: {e}")
             await callback.answer("❌ Ошибка сервера", show_alert=True)
@@ -294,15 +266,11 @@ async def cancel_booking(callback: types.CallbackQuery):
     
     async with aiohttp.ClientSession() as s:
         try:
-            # Сначала получаем детали записи
-            async with s.get(f"{API_URL}/bookings/{booking_id}") as get_resp:
-                if get_resp.status != 200:
-                    await callback.answer("❌ Запись не найдена", show_alert=True)
-                    return
-                booking = await get_resp.json()
-            
-            # Отменяем запись
+            # Прямо отправляем PATCH запрос на отмену
             async with s.patch(f"{API_URL}/bookings/{booking_id}/status?status=cancelled") as r:
+                response_text = await r.text()
+                logger.info(f"PATCH response status: {r.status}, body: {response_text}")
+                
                 if r.status == 200:
                     # Обновляем сообщение
                     await callback.message.edit_text(
@@ -310,21 +278,9 @@ async def cancel_booking(callback: types.CallbackQuery):
                         parse_mode="Markdown"
                     )
                     
-                    # Отправляем уведомление клиенту
-                    client_tg_id = booking.get('client_telegram_id')
-                    if client_tg_id:
-                        await send_message(
-                            client_tg_id,
-                            f"😔 *Запись отменена*\n\n"
-                            f"К сожалению, мастер отменил вашу запись:\n"
-                            f"💅 {booking.get('service_name', '')}\n"
-                            f"📅 {booking['date']} в {booking['time']}\n\n"
-                            f"Вы можете записаться снова в любое время. 🌸"
-                        )
-                    
                     await callback.answer("❌ Запись отменена", show_alert=True)
                 else:
-                    await callback.answer("❌ Ошибка при отмене", show_alert=True)
+                    await callback.answer(f"❌ Ошибка {r.status}: проверьте логи", show_alert=True)
         except Exception as e:
             logger.error(f"Cancel booking error: {e}")
             await callback.answer("❌ Ошибка сервера", show_alert=True)
@@ -332,7 +288,6 @@ async def cancel_booking(callback: types.CallbackQuery):
 
 async def main():
     logger.info("Starting Master Bot...")
-    # Устанавливаем webhook? Нет, используем polling
     await dp.start_polling(bot)
 
 
