@@ -10,7 +10,6 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ⚠️ Замените на токен бота мастеров (создайте нового бота у @BotFather)
 MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 API_URL = os.getenv("API_URL", "https://beauty-bot-api-production.up.railway.app")
 
@@ -21,7 +20,6 @@ WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
 async def get_master(telegram_id: str):
-    """Получить данные мастера по Telegram ID"""
     async with aiohttp.ClientSession() as s:
         try:
             async with s.get(f"{API_URL}/masters/by_telegram/{telegram_id}") as r:
@@ -33,7 +31,6 @@ async def get_master(telegram_id: str):
 
 
 async def send_message(telegram_id: str, message: str):
-    """Отправка сообщения пользователю"""
     if not telegram_id:
         return
     try:
@@ -46,7 +43,6 @@ async def send_message(telegram_id: str, message: str):
         logger.error(f"Send message error: {e}")
 
 
-# --- /start ---
 @dp.message(CommandStart())
 async def start(message: types.Message):
     master = await get_master(str(message.from_user.id))
@@ -64,13 +60,11 @@ async def start(message: types.Message):
     else:
         await message.answer(
             "👋 Привет! Ты не зарегистрирован как мастер.\n\n"
-            "Напиши администратору чтобы тебя добавили в систему.\n"
             f"Твой Telegram ID: `{message.from_user.id}`",
             parse_mode="Markdown"
         )
 
 
-# --- /schedule ---
 @dp.message(Command("schedule"))
 async def schedule(message: types.Message):
     master = await get_master(str(message.from_user.id))
@@ -111,7 +105,6 @@ async def schedule(message: types.Message):
     await message.answer(text, parse_mode="Markdown")
 
 
-# --- /bookings ---
 @dp.message(Command("bookings"))
 async def bookings(message: types.Message):
     master = await get_master(str(message.from_user.id))
@@ -148,7 +141,6 @@ async def bookings(message: types.Message):
     await message.answer(text, parse_mode="Markdown")
 
 
-# --- /off YYYY-MM-DD ---
 @dp.message(Command("off"))
 async def set_day_off(message: types.Message):
     master = await get_master(str(message.from_user.id))
@@ -165,22 +157,20 @@ async def set_day_off(message: types.Message):
     try:
         datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
-        await message.answer("❌ Неверный формат даты. Используй: `ГГГГ-ММ-ДД`", parse_mode="Markdown")
+        await message.answer("❌ Неверный формат даты", parse_mode="Markdown")
         return
 
     async with aiohttp.ClientSession() as s:
         try:
             async with s.post(f"{API_URL}/masters/{master['id']}/days_off?date={date}") as r:
                 if r.status == 200:
-                    await message.answer(f"🔴 День *{date}* закрыт. Новые записи на этот день невозможны.", parse_mode="Markdown")
+                    await message.answer(f"🔴 День *{date}* закрыт", parse_mode="Markdown")
                 else:
-                    await message.answer("❌ Ошибка. Попробуй ещё раз.")
+                    await message.answer("❌ Ошибка")
         except Exception as e:
-            logger.error(f"Set day off error: {e}")
-            await message.answer("❌ Ошибка подключения к серверу")
+            await message.answer("❌ Ошибка подключения")
 
 
-# --- /on YYYY-MM-DD ---
 @dp.message(Command("on"))
 async def remove_day_off(message: types.Message):
     master = await get_master(str(message.from_user.id))
@@ -198,59 +188,65 @@ async def remove_day_off(message: types.Message):
         try:
             async with s.delete(f"{API_URL}/masters/{master['id']}/days_off/{date}") as r:
                 if r.status == 200:
-                    await message.answer(f"✅ День *{date}* открыт для записей!", parse_mode="Markdown")
+                    await message.answer(f"✅ День *{date}* открыт", parse_mode="Markdown")
                 else:
-                    await message.answer("❌ Ошибка. Попробуй ещё раз.")
+                    await message.answer("❌ Ошибка")
         except Exception as e:
-            logger.error(f"Remove day off error: {e}")
-            await message.answer("❌ Ошибка подключения к серверу")
+            await message.answer("❌ Ошибка подключения")
 
 
-# --- /help ---
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
     await message.answer(
-        "ℹ️ *Команды бота мастера:*\n\n"
+        "ℹ️ *Команды мастера:*\n\n"
         "📋 /schedule — расписание на 7 дней\n"
-        "📅 /bookings — все предстоящие записи\n"
-        "🔒 /off 2025-05-10 — закрыть день (выходной)\n"
-        "✅ /on 2025-05-10 — открыть день\n\n"
-        "Когда клиент записывается — ты получаешь уведомление с кнопками подтвердить/отменить.",
+        "📅 /bookings — все записи\n"
+        "🔒 /off ГГГГ-ММ-ДД — закрыть день\n"
+        "✅ /on ГГГГ-ММ-ДД — открыть день",
         parse_mode="Markdown"
     )
 
 
-# --- Кнопки подтвердить/отменить (ИСПРАВЛЕНО - без GET запроса) ---
 @dp.callback_query(F.data.startswith("confirm_"))
 async def confirm_booking(callback: types.CallbackQuery):
     booking_id = int(callback.data.split("_")[1])
     
-    # Проверяем, что мастер зарегистрирован
     master = await get_master(str(callback.from_user.id))
     if not master:
-        await callback.answer("❌ Вы не зарегистрированы как мастер", show_alert=True)
+        await callback.answer("❌ Вы не зарегистрированы", show_alert=True)
         return
     
     async with aiohttp.ClientSession() as s:
         try:
-            # Прямо отправляем PATCH запрос на подтверждение
+            async with s.get(f"{API_URL}/bookings/{booking_id}") as get_resp:
+                if get_resp.status != 200:
+                    await callback.answer("❌ Запись не найдена", show_alert=True)
+                    return
+                booking = await get_resp.json()
+            
             async with s.patch(f"{API_URL}/bookings/{booking_id}/status?status=confirmed") as r:
-                # Получаем текст ответа для диагностики
-                response_text = await r.text()
-                logger.info(f"PATCH response status: {r.status}, body: {response_text}")
-                
                 if r.status == 200:
-                    # Обновляем сообщение
                     await callback.message.edit_text(
                         callback.message.text + "\n\n✅ *Запись подтверждена!*",
                         parse_mode="Markdown"
                     )
                     
-                    await callback.answer("✅ Запись подтверждена!", show_alert=True)
+                    client_tg_id = booking.get('client_telegram_id')
+                    if client_tg_id:
+                        await send_message(
+                            client_tg_id,
+                            f"🎉 *Запись подтверждена!*\n\n"
+                            f"💅 {booking.get('service_name', '')}\n"
+                            f"👩 {master['name']}\n"
+                            f"📅 {booking['date']} в {booking['time']}\n\n"
+                            f"Ждём вас! ✨"
+                        )
+                    
+                    await callback.answer("✅ Подтверждено!", show_alert=True)
                 else:
-                    await callback.answer(f"❌ Ошибка {r.status}: проверьте логи", show_alert=True)
+                    await callback.answer("❌ Ошибка", show_alert=True)
         except Exception as e:
-            logger.error(f"Confirm booking error: {e}")
+            logger.error(f"Confirm error: {e}")
             await callback.answer("❌ Ошибка сервера", show_alert=True)
 
 
@@ -258,31 +254,42 @@ async def confirm_booking(callback: types.CallbackQuery):
 async def cancel_booking(callback: types.CallbackQuery):
     booking_id = int(callback.data.split("_")[1])
     
-    # Проверяем, что мастер зарегистрирован
     master = await get_master(str(callback.from_user.id))
     if not master:
-        await callback.answer("❌ Вы не зарегистрированы как мастер", show_alert=True)
+        await callback.answer("❌ Вы не зарегистрированы", show_alert=True)
         return
     
     async with aiohttp.ClientSession() as s:
         try:
-            # Прямо отправляем PATCH запрос на отмену
+            async with s.get(f"{API_URL}/bookings/{booking_id}") as get_resp:
+                if get_resp.status != 200:
+                    await callback.answer("❌ Запись не найдена", show_alert=True)
+                    return
+                booking = await get_resp.json()
+            
             async with s.patch(f"{API_URL}/bookings/{booking_id}/status?status=cancelled") as r:
-                response_text = await r.text()
-                logger.info(f"PATCH response status: {r.status}, body: {response_text}")
-                
                 if r.status == 200:
-                    # Обновляем сообщение
                     await callback.message.edit_text(
                         callback.message.text + "\n\n❌ *Запись отменена.*",
                         parse_mode="Markdown"
                     )
                     
-                    await callback.answer("❌ Запись отменена", show_alert=True)
+                    client_tg_id = booking.get('client_telegram_id')
+                    if client_tg_id:
+                        await send_message(
+                            client_tg_id,
+                            f"😔 *Запись отменена*\n\n"
+                            f"💅 {booking.get('service_name', '')}\n"
+                            f"👩 {master['name']}\n"
+                            f"📅 {booking['date']} в {booking['time']}\n\n"
+                            f"Вы можете записаться снова. 🌸"
+                        )
+                    
+                    await callback.answer("❌ Отменено", show_alert=True)
                 else:
-                    await callback.answer(f"❌ Ошибка {r.status}: проверьте логи", show_alert=True)
+                    await callback.answer("❌ Ошибка", show_alert=True)
         except Exception as e:
-            logger.error(f"Cancel booking error: {e}")
+            logger.error(f"Cancel error: {e}")
             await callback.answer("❌ Ошибка сервера", show_alert=True)
 
 
