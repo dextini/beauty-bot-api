@@ -1,488 +1,352 @@
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional, List
-import sqlite3
+import asyncio
+import logging
 import os
-import httpx
-from datetime import datetime, timedelta
+import aiohttp
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import CommandStart, Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from datetime import datetime
 
-app = FastAPI(title="Beauty Bot API")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-DB_PATH = "beauty.db"
 MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
-DEFAULT_WORK_START = "09:00"
-DEFAULT_WORK_END = "20:00"
-SLOT_INTERVAL = 30
+API_URL = os.getenv("API_URL", "https://beauty-bot-api-production.up.railway.app")
 
-# ID администраторов (замени на свои Telegram ID)
-ADMIN_IDS = [123456789]  # ДОБАВЬ СВОЙ TELEGRAM ID СЮДА!
+bot = Bot(token=MASTER_BOT_TOKEN)
+dp = Dispatcher()
 
+WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS masters (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            photo_url TEXT,
-            description TEXT,
-            address TEXT NOT NULL,
-            lat REAL NOT NULL,
-            lon REAL NOT NULL,
-            phone TEXT,
-            instagram TEXT,
-            telegram_id TEXT,
-            work_start TEXT DEFAULT '09:00',
-            work_end TEXT DEFAULT '20:00'
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS services (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            master_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            price INTEGER NOT NULL,
-            duration_min INTEGER NOT NULL,
-            FOREIGN KEY (master_id) REFERENCES masters(id)
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS bookings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            master_id INTEGER NOT NULL,
-            service_id INTEGER NOT NULL,
-            client_name TEXT NOT NULL,
-            client_telegram_id TEXT NOT NULL,
-            client_phone TEXT,
-            date TEXT NOT NULL,
-            time TEXT NOT NULL,
-            status TEXT DEFAULT 'pending',
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (master_id) REFERENCES masters(id),
-            FOREIGN KEY (service_id) REFERENCES services(id)
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS days_off (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            master_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            UNIQUE(master_id, date),
-            FOREIGN KEY (master_id) REFERENCES masters(id)
-        )
-    """)
-
-    # НОВАЯ ТАБЛИЦА ДЛЯ ЗАЯВОК НА РЕГИСТРАЦИЮ
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS register_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id TEXT UNIQUE,
-            name TEXT,
-            address TEXT,
-            phone TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    for col in ["telegram_id TEXT", "work_start TEXT DEFAULT '09:00'", "work_end TEXT DEFAULT '20:00'"]:
-        try:
-            c.execute(f"ALTER TABLE masters ADD COLUMN {col}")
-        except:
-            pass
-
-    c.execute("SELECT COUNT(*) FROM masters")
-    if c.fetchone()[0] == 0:
-        masters_data = [
-            ("Алина Козлова", None, "Мастер маникюра с 5-летним опытом", "ул. Ленина, 12", 55.751244, 37.618423, "+79001234567", "@alina_nails"),
-            ("Мария Иванова", None, "Профессиональный визажист и мастер бровей", "пр. Мира, 45", 55.763244, 37.628423, "+79009876543", "@maria_beauty"),
-            ("Екатерина Смирнова", None, "Специалист по уходу за ресницами", "ул. Садовая, 8", 55.745244, 37.608423, "+79005551234", "@kate_lashes"),
-        ]
-        c.executemany("INSERT INTO masters (name, photo_url, description, address, lat, lon, phone, instagram) VALUES (?,?,?,?,?,?,?,?)", masters_data)
-        conn.commit()
-
-        c.execute("SELECT id FROM masters")
-        ids = [row[0] for row in c.fetchall()]
-        services = [
-            (ids[0], "Маникюр классический", 1200, 60),
-            (ids[0], "Маникюр с покрытием гель-лак", 2000, 90),
-            (ids[0], "Педикюр", 2500, 120),
-            (ids[1], "Макияж дневной", 2500, 60),
-            (ids[1], "Коррекция бровей", 800, 30),
-            (ids[1], "Макияж вечерний", 4000, 90),
-            (ids[2], "Наращивание ресниц", 3000, 120),
-            (ids[2], "Ламинирование ресниц", 2500, 90),
-        ]
-        c.executemany("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", services)
-        conn.commit()
-
-    conn.close()
-
-init_db()
+# ЗАМЕНИ НА СВОЙ TELEGRAM ID (можно узнать у @userinfobot)
+ADMIN_IDS = [123456789]
 
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+async def api_request(method: str, endpoint: str, data=None):
+    async with aiohttp.ClientSession() as s:
+        async with s.request(method, f"{API_URL}{endpoint}", json=data) as r:
+            try:
+                return await r.json()
+            except:
+                return None
+
+
+async def get_master(telegram_id: str):
+    return await api_request("GET", f"/masters/by-telegram/{telegram_id}")
+
+
+async def send_message_via_admin_bot(telegram_id: str, message: str):
+    """Отправляет сообщение через бота администратора"""
     try:
-        yield conn
-    finally:
-        conn.close()
-
-
-def generate_slots(work_start: str, work_end: str, interval: int = 30) -> List[str]:
-    slots = []
-    start = datetime.strptime(work_start, "%H:%M")
-    end = datetime.strptime(work_end, "%H:%M")
-    current = start
-    while current < end:
-        slots.append(current.strftime("%H:%M"))
-        current += timedelta(minutes=interval)
-    return slots
-
-
-async def notify_master_with_buttons(master_telegram_id: str, message: str, booking_id: int):
-    if not master_telegram_id or MASTER_BOT_TOKEN == "YOUR_MASTER_BOT_TOKEN":
-        return
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
-                json={
-                    "chat_id": master_telegram_id,
-                    "text": message,
-                    "parse_mode": "Markdown",
-                    "reply_markup": {
-                        "inline_keyboard": [[
-                            {"text": "✅ Подтвердить", "callback_data": f"confirm_{booking_id}"},
-                            {"text": "❌ Отменить", "callback_data": f"cancel_{booking_id}"}
-                        ]]
-                    }
-                }
-            )
-    except Exception as e:
-        print(f"Notify error: {e}")
-
-
-async def send_message(telegram_id: str, message: str):
-    if not telegram_id or MASTER_BOT_TOKEN == "YOUR_MASTER_BOT_TOKEN":
-        return
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
+        async with aiohttp.ClientSession() as session:
+            await session.post(
                 f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
                 json={"chat_id": telegram_id, "text": message, "parse_mode": "Markdown"}
             )
     except Exception as e:
-        print(f"Send message error: {e}")
+        logger.error(f"Send message error: {e}")
 
 
-class ServiceOut(BaseModel):
-    id: int
-    master_id: int
-    name: str
-    price: int
-    duration_min: int
+# ========================== /start ==========================
 
-class MasterOut(BaseModel):
-    id: int
-    name: str
-    photo_url: Optional[str]
-    description: Optional[str]
-    address: str
-    lat: float
-    lon: float
-    phone: Optional[str]
-    instagram: Optional[str]
-    services: List[ServiceOut] = []
+@dp.message(CommandStart())
+async def start(message: types.Message):
+    user_id = str(message.from_user.id)
+    master = await get_master(user_id)
 
-class BookingIn(BaseModel):
-    master_id: int
-    service_id: int
-    client_name: str
-    client_telegram_id: str
-    client_phone: Optional[str]
-    date: str
-    time: str
-
-
-# ========== НОВЫЕ ЭНДПОИНТЫ ДЛЯ РЕГИСТРАЦИИ МАСТЕРОВ ==========
-
-class RegisterRequest(BaseModel):
-    telegram_id: str
-    name: str
-    address: str
-    phone: str
+    if user_id in ADMIN_IDS:
+        text = ("👑 *Админ-панель*\n\n"
+                "📋 /pending — просмотр заявок\n"
+                "✅ /approve ID — одобрить мастера\n"
+                "❌ /reject ID — отклонить\n"
+                "🔧 /masters — список мастеров\n"
+                "📊 /stats — статистика")
+    elif master:
+        text = (f"💅 *{master['name']}*\n\n"
+                "📋 /schedule — моё расписание\n"
+                "📅 /bookings — мои записи\n"
+                "🔒 /off YYYY-MM-DD — закрыть день\n"
+                "✅ /on YYYY-MM-DD — открыть день\n"
+                "🤖 /set_token ТОКЕН — привязать своего бота")
+    else:
+        text = ("👋 *Вы не зарегистрированы*\n\n"
+                "📝 Отправьте заявку:\n"
+                "`/register Имя Адрес Телефон`\n\n"
+                "Пример:\n"
+                "`/register Анна ул.Ленина 10 +79001234567`")
+    await message.answer(text, parse_mode="Markdown")
 
 
-@app.post("/register-request")
-async def register_request(data: RegisterRequest, conn: sqlite3.Connection = Depends(get_db)):
-    """Мастер отправляет заявку на регистрацию"""
-    # Проверяем, нет ли уже такой заявки
-    existing = conn.execute("SELECT id FROM register_requests WHERE telegram_id=?", (data.telegram_id,)).fetchone()
-    if existing:
-        raise HTTPException(status_code=409, detail="Request already exists")
-    
-    conn.execute(
-        "INSERT INTO register_requests (telegram_id, name, address, phone) VALUES (?,?,?,?)",
-        (data.telegram_id, data.name, data.address, data.phone)
-    )
-    conn.commit()
-    return {"status": "ok", "message": "Request sent to admin"}
+# ========================== РЕГИСТРАЦИЯ МАСТЕРА ==========================
+
+@dp.message(Command("register"))
+async def register_master(message: types.Message):
+    user_id = str(message.from_user.id)
+
+    if await get_master(user_id):
+        await message.answer("✅ Вы уже зарегистрированы")
+        return
+
+    parts = message.text.split(maxsplit=3)
+    if len(parts) < 4:
+        await message.answer("❌ Формат: `/register Имя Адрес Телефон`", parse_mode="Markdown")
+        return
+
+    _, name, address, phone = parts
+
+    payload = {"telegram_id": user_id, "name": name, "address": address, "phone": phone}
+    resp = await api_request("POST", "/register-request", payload)
+
+    if resp and resp.get("status") == "ok":
+        await message.answer("✅ *Заявка отправлена!*\nАдминистратор рассмотрит её.", parse_mode="Markdown")
+        for admin_id in ADMIN_IDS:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_{user_id}"),
+                 InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{user_id}")]
+            ])
+            await bot.send_message(
+                admin_id,
+                f"🆕 *НОВАЯ ЗАЯВКА*\n\n"
+                f"👤 Имя: {name}\n"
+                f"📍 Адрес: {address}\n"
+                f"📞 Телефон: {phone}\n"
+                f"🆔 ID: `{user_id}`",
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+    else:
+        await message.answer("❌ Ошибка при отправке заявки")
 
 
-@app.get("/register-requests/pending")
-def get_pending_requests(conn: sqlite3.Connection = Depends(get_db)):
-    """Получить все pending заявки (для админа)"""
-    requests = conn.execute("SELECT * FROM register_requests WHERE status='pending'").fetchall()
-    return [dict(r) for r in requests]
+# ========================== ПРИВЯЗКА БОТА МАСТЕРА ==========================
 
-
-@app.post("/approve-master/{telegram_id}")
-def approve_master(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Администратор подтверждает заявку и создаёт мастера"""
-    # Получаем заявку
-    request = conn.execute("SELECT * FROM register_requests WHERE telegram_id=?", (telegram_id,)).fetchone()
-    if not request:
-        raise HTTPException(status_code=404, detail="Request not found")
-    
-    # Создаём мастера (координаты по умолчанию, мастер потом сможет их изменить)
-    conn.execute(
-        """INSERT INTO masters (name, address, phone, telegram_id, lat, lon, description) 
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (request["name"], request["address"], request["phone"], telegram_id, 55.751244, 37.618423, "Новый мастер")
-    )
-    
-    # Обновляем статус заявки
-    conn.execute("UPDATE register_requests SET status='approved' WHERE telegram_id=?", (telegram_id,))
-    conn.commit()
-    
-    return {"status": "ok", "message": f"Master {request['name']} approved"}
-
-
-@app.delete("/reject-master/{telegram_id}")
-def reject_master(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Отклонить заявку"""
-    conn.execute("DELETE FROM register_requests WHERE telegram_id=?", (telegram_id,))
-    conn.commit()
-    return {"status": "ok", "message": "Request rejected"}
-
-
-# ========== ОСНОВНЫЕ ЭНДПОИНТЫ ==========
-
-@app.get("/")
-def root():
-    return {"status": "Beauty Bot API running 🌸"}
-
-@app.get("/masters", response_model=List[MasterOut])
-def get_masters(conn: sqlite3.Connection = Depends(get_db)):
-    masters = conn.execute("SELECT * FROM masters").fetchall()
-    result = []
-    for m in masters:
-        services = conn.execute("SELECT * FROM services WHERE master_id = ?", (m["id"],)).fetchall()
-        master_dict = dict(m)
-        master_dict["services"] = [dict(s) for s in services]
-        result.append(master_dict)
-    return result
-
-@app.get("/masters/by_telegram/{telegram_id}")
-def get_master_by_telegram(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT * FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
+@dp.message(Command("set_token"))
+async def set_bot_token(message: types.Message):
+    master = await get_master(str(message.from_user.id))
     if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
-    return dict(master)
+        await message.answer("❌ Вы не зарегистрированы как мастер")
+        return
 
-@app.get("/masters/{master_id}", response_model=MasterOut)
-def get_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    m = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
-    if not m:
-        raise HTTPException(status_code=404, detail="Master not found")
-    services = conn.execute("SELECT * FROM services WHERE master_id = ?", (master_id,)).fetchall()
-    master_dict = dict(m)
-    master_dict["services"] = [dict(s) for s in services]
-    return master_dict
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Формат: `/set_token ТОКЕН_БОТА`\n\nПолучить токен можно у @BotFather", parse_mode="Markdown")
+        return
 
-@app.get("/masters/{master_id}/slots")
-def get_free_slots(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
+    token = parts[1]
+
+    async with aiohttp.ClientSession() as s:
+        async with s.patch(f"{API_URL}/masters/{master['id']}/bot-token?bot_token={token}") as resp:
+            if resp.status == 200:
+                await message.answer("✅ *Токен сохранён!*\nТеперь уведомления будут приходить в вашего бота.", parse_mode="Markdown")
+                # Пробуем отправить тестовое сообщение через бота мастера
+                try:
+                    async with aiohttp.ClientSession() as sess:
+                        await sess.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": message.from_user.id, "text": "✅ Ваш бот успешно подключён! Уведомления будут приходить сюда.", "parse_mode": "Markdown"}
+                        )
+                except Exception as e:
+                    await message.answer(f"⚠️ Не удалось отправить тестовое сообщение. Проверьте токен.")
+            else:
+                await message.answer("❌ Ошибка при сохранении токена")
+
+
+# ========================== АДМИН-КОМАНДЫ ==========================
+
+@dp.message(Command("pending"))
+async def list_pending(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+
+    requests = await api_request("GET", "/register-requests/pending")
+    if not requests:
+        await message.answer("📭 Нет новых заявок")
+        return
+
+    for r in requests:
+        text = (f"🆔 ID: `{r['telegram_id']}`\n"
+                f"👤 Имя: {r['name']}\n"
+                f"📍 Адрес: {r['address']}\n"
+                f"📞 Телефон: {r['phone']}")
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_{r['telegram_id']}"),
+             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{r['telegram_id']}")]
+        ])
+        await message.answer(text, reply_markup=keyboard)
+
+
+@dp.callback_query(F.data.startswith("approve_"))
+async def approve_callback(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+
+    tg_id = callback.data.split("_")[1]
+    resp = await api_request("POST", f"/approve-master/{tg_id}")
+
+    if resp and resp.get("status") == "ok":
+        await callback.message.edit_text(callback.message.text + "\n\n✅ *Одобрено*", parse_mode="Markdown")
+        await send_message_via_admin_bot(tg_id, "🎉 *Заявка одобрена!*\n\nТеперь вы можете:\n/schedule — расписание\n/bookings — записи\n/set_token — привязать своего бота")
+        await callback.answer("✅ Одобрено", show_alert=True)
+    else:
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("reject_"))
+async def reject_callback(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+
+    tg_id = callback.data.split("_")[1]
+    await callback.message.edit_text(callback.message.text + "\n\n❌ *Отклонено*", parse_mode="Markdown")
+    await send_message_via_admin_bot(tg_id, "😔 *Заявка отклонена*\n\nВы можете попробовать снова.")
+    await callback.answer("❌ Отклонено", show_alert=True)
+
+
+@dp.message(Command("approve"))
+async def approve_master(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Формат: `/approve TELEGRAM_ID`", parse_mode="Markdown")
+        return
+
+    tg_id = parts[1]
+    resp = await api_request("POST", f"/approve-master/{tg_id}")
+
+    if resp and resp.get("status") == "ok":
+        await message.answer(f"✅ Мастер `{tg_id}` одобрен", parse_mode="Markdown")
+        await send_message_via_admin_bot(tg_id, "🎉 *Заявка одобрена!*\n\n/schedule — расписание\n/bookings — записи")
+    else:
+        await message.answer("❌ Ошибка")
+
+
+@dp.message(Command("reject"))
+async def reject_master(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Формат: `/reject TELEGRAM_ID`", parse_mode="Markdown")
+        return
+
+    tg_id = parts[1]
+    await message.answer(f"❌ Мастер `{tg_id}` отклонён", parse_mode="Markdown")
+    await send_message_via_admin_bot(tg_id, "😔 *Заявка отклонена*")
+
+
+# ========================== КОМАНДЫ МАСТЕРА ==========================
+
+@dp.message(Command("schedule"))
+async def schedule(message: types.Message):
+    master = await get_master(str(message.from_user.id))
     if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
+        await message.answer("❌ Не зарегистрированы")
+        return
 
-    day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (master_id, date)).fetchone()
-    if day_off:
-        return {"date": date, "slots": [], "day_off": True}
+    days = await api_request("GET", f"/masters/{master['id']}/schedule")
+    if not days:
+        await message.answer("❌ Ошибка")
+        return
 
-    work_start = master["work_start"] or DEFAULT_WORK_START
-    work_end = master["work_end"] or DEFAULT_WORK_END
-    all_slots = generate_slots(work_start, work_end)
+    text = "📅 *Расписание на 7 дней:*\n\n"
+    for day in days:
+        dt = datetime.strptime(day["date"], "%Y-%m-%d")
+        weekday = WEEKDAYS[dt.weekday()]
+        date_str = dt.strftime("%d.%m")
 
-    booked = conn.execute(
-        "SELECT time FROM bookings WHERE master_id=? AND date=? AND status!='cancelled'",
-        (master_id, date)
-    ).fetchall()
-    booked_times = {b["time"] for b in booked}
+        if day["day_off"]:
+            text += f"🔴 *{date_str} ({weekday})* — выходной\n\n"
+        elif not day["bookings"]:
+            text += f"🟢 *{date_str} ({weekday})* — свободно\n\n"
+        else:
+            text += f"🟡 *{date_str} ({weekday})* — {len(day['bookings'])} записей:\n"
+            for b in day["bookings"]:
+                status_emoji = "✅" if b["status"] == "confirmed" else "⏳"
+                text += f"  {status_emoji} {b['time']} — {b['client_name']}\n"
+            text += "\n"
+    await message.answer(text, parse_mode="Markdown")
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    now_time = datetime.now().strftime("%H:%M")
 
-    free_slots = [
-        s for s in all_slots
-        if s not in booked_times and not (date == today and s <= now_time)
-    ]
-
-    return {"date": date, "slots": free_slots, "day_off": False}
-
-@app.get("/masters/{master_id}/schedule")
-def get_schedule(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
+@dp.message(Command("bookings"))
+async def bookings(message: types.Message):
+    master = await get_master(str(message.from_user.id))
     if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
+        await message.answer("❌ Не зарегистрированы")
+        return
 
-    result = []
-    today = datetime.now()
-    for i in range(7):
-        day = (today + timedelta(days=i)).strftime("%Y-%m-%d")
-        day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (master_id, day)).fetchone()
-        bookings = conn.execute(
-            """SELECT b.time, b.status, b.client_name, b.client_phone, s.name as service_name
-               FROM bookings b JOIN services s ON b.service_id=s.id
-               WHERE b.master_id=? AND b.date=? AND b.status!='cancelled' ORDER BY b.time""",
-            (master_id, day)
-        ).fetchall()
-        result.append({"date": day, "day_off": bool(day_off), "bookings": [dict(b) for b in bookings]})
-    return result
+    all_bookings = await api_request("GET", f"/bookings/master/{master['id']}")
+    if not all_bookings:
+        await message.answer("📭 Нет записей")
+        return
 
-@app.post("/masters/{master_id}/days_off")
-def add_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("INSERT OR IGNORE INTO days_off (master_id, date) VALUES (?,?)", (master_id, date))
-    conn.commit()
-    return {"status": "ok", "date": date}
-
-@app.delete("/masters/{master_id}/days_off/{date}")
-def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("DELETE FROM days_off WHERE master_id=? AND date=?", (master_id, date))
-    conn.commit()
-    return {"status": "ok", "date": date}
-
-@app.patch("/masters/{master_id}/telegram")
-def set_master_telegram(master_id: int, telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("UPDATE masters SET telegram_id=? WHERE id=?", (telegram_id, master_id))
-    conn.commit()
-    return {"status": "ok"}
+    text = "📋 *Предстоящие записи:*\n\n"
+    for b in all_bookings[:15]:
+        status_emoji = {"pending": "⏳", "confirmed": "✅", "cancelled": "❌"}.get(b["status"], "⏳")
+        text += f"{status_emoji} *{b['date']} в {b['time']}*\n👤 {b['client_name']}\n💅 {b['service_name']} — {b['price']} ₽\n\n"
+    await message.answer(text, parse_mode="Markdown")
 
 
-# ========== ЭНДПОИНТЫ ДЛЯ ЗАПИСЕЙ ==========
+@dp.message(Command("off"))
+async def set_day_off(message: types.Message):
+    master = await get_master(str(message.from_user.id))
+    if not master:
+        await message.answer("❌ Не зарегистрированы")
+        return
 
-@app.post("/bookings")
-async def create_booking(data: BookingIn):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Формат: `/off 2025-05-10`", parse_mode="Markdown")
+        return
+
+    date = parts[1]
     try:
-        master = conn.execute("SELECT * FROM masters WHERE id = ?", (data.master_id,)).fetchone()
-        if not master:
-            raise HTTPException(status_code=404, detail="Master not found")
-        
-        service = conn.execute("SELECT * FROM services WHERE id=? AND master_id=?", (data.service_id, data.master_id)).fetchone()
-        if not service:
-            raise HTTPException(status_code=404, detail="Service not found")
-        
-        day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (data.master_id, data.date)).fetchone()
-        if day_off:
-            raise HTTPException(status_code=409, detail="Master is off this day")
-        
-        existing = conn.execute(
-            "SELECT id FROM bookings WHERE master_id=? AND date=? AND time=? AND status!='cancelled'",
-            (data.master_id, data.date, data.time)
-        ).fetchone()
-        if existing:
-            raise HTTPException(status_code=409, detail="This time slot is already booked")
-        
-        cursor = conn.execute(
-            "INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time) VALUES (?,?,?,?,?,?,?)",
-            (data.master_id, data.service_id, data.client_name, data.client_telegram_id, data.client_phone, data.date, data.time)
-        )
-        conn.commit()
-        booking_id = cursor.lastrowid
-        
-        master_tg = master["telegram_id"]
-        phone_line = f"\n📞 Телефон: {data.client_phone}" if data.client_phone else ""
-        message = (
-            f"🌸 *Новая запись!*\n\n"
-            f"👩 Клиент: {data.client_name}{phone_line}\n"
-            f"💅 Услуга: {service['name']}\n"
-            f"💰 Цена: {service['price']} ₽\n"
-            f"📅 Дата: {data.date}\n"
-            f"🕐 Время: {data.time}"
-        )
-        await notify_master_with_buttons(master_tg, message, booking_id)
-        
-        booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
-        return dict(booking)
-    finally:
-        conn.close()
+        datetime.strptime(date, "%Y-%m-%d")
+    except:
+        await message.answer("❌ Неверный формат даты")
+        return
+
+    resp = await api_request("POST", f"/masters/{master['id']}/days_off?date={date}")
+    if resp and resp.get("status") == "ok":
+        await message.answer(f"🔴 День *{date}* закрыт", parse_mode="Markdown")
+    else:
+        await message.answer("❌ Ошибка")
 
 
-@app.get("/bookings/{booking_id}")
-def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    """Получить одну запись по ID"""
-    booking = conn.execute(
-        """SELECT b.*, m.name as master_name, s.name as service_name, s.price 
-           FROM bookings b 
-           JOIN masters m ON b.master_id = m.id 
-           JOIN services s ON b.service_id = s.id 
-           WHERE b.id = ?""",
-        (booking_id,)
-    ).fetchone()
-    
-    if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
-    return dict(booking)
+@dp.message(Command("on"))
+async def remove_day_off(message: types.Message):
+    master = await get_master(str(message.from_user.id))
+    if not master:
+        await message.answer("❌ Не зарегистрированы")
+        return
+
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Формат: `/on 2025-05-10`", parse_mode="Markdown")
+        return
+
+    date = parts[1]
+    async with aiohttp.ClientSession() as s:
+        async with s.delete(f"{API_URL}/masters/{master['id']}/days_off/{date}") as r:
+            if r.status == 200:
+                await message.answer(f"✅ День *{date}* открыт", parse_mode="Markdown")
+            else:
+                await message.answer("❌ Ошибка")
 
 
-@app.patch("/bookings/{booking_id}/status")
-def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Обновить статус записи (confirmed/cancelled)"""
-    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
-    if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
-    
-    conn.execute("UPDATE bookings SET status = ? WHERE id = ?", (status, booking_id))
-    conn.commit()
-    
-    return {"status": "ok", "booking_id": booking_id, "new_status": status}
+# ========================== ЗАПУСК ==========================
+
+async def main():
+    logger.info("🚀 Бот администратора запущен")
+    await dp.start_polling(bot)
 
 
-@app.get("/bookings/master/{master_id}")
-def get_master_bookings(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    bookings = conn.execute(
-        """SELECT b.*, s.name as service_name, s.price FROM bookings b
-           JOIN services s ON b.service_id=s.id
-           WHERE b.master_id=? AND b.status!='cancelled' ORDER BY b.date, b.time""",
-        (master_id,)
-    ).fetchall()
-    return [dict(b) for b in bookings]
-
-
-@app.get("/bookings/client/{telegram_id}")
-def get_client_bookings(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    bookings = conn.execute(
-        """SELECT b.*, m.name as master_name, s.name as service_name, s.price
-           FROM bookings b JOIN masters m ON b.master_id=m.id JOIN services s ON b.service_id=s.id
-           WHERE b.client_telegram_id=? ORDER BY b.date DESC, b.time DESC""",
-        (telegram_id,)
-    ).fetchall()
-    return [dict(b) for b in bookings]
+if __name__ == "__main__":
+    asyncio.run(main())
