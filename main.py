@@ -398,3 +398,44 @@ def get_client_bookings(telegram_id: str, conn: sqlite3.Connection = Depends(get
 @app.get("/")
 def root():
     return {"status": "Beauty Bot API running 🌸"}
+
+# --- ИСПРАВЛЕННЫЕ ЭНДПОИНТЫ ДЛЯ ЗАПИСЕЙ ---
+
+@app.get("/bookings/{booking_id}")
+def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    """Получить одну запись по ID (для мастера)"""
+    booking = conn.execute(
+        """SELECT b.*, m.name as master_name, s.name as service_name, s.price 
+           FROM bookings b 
+           JOIN masters m ON b.master_id = m.id 
+           JOIN services s ON b.service_id = s.id 
+           WHERE b.id = ?""",
+        (booking_id,)
+    ).fetchone()
+    
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    
+    return dict(booking)
+
+
+@app.get("/bookings/master/{master_id}")
+def get_master_bookings(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    bookings = conn.execute(
+        """SELECT b.*, s.name as service_name, s.price FROM bookings b
+           JOIN services s ON b.service_id=s.id
+           WHERE b.master_id=? AND b.status!='cancelled' ORDER BY b.date, b.time""",
+        (master_id,)
+    ).fetchall()
+    return [dict(b) for b in bookings]
+
+
+@app.get("/bookings/client/{telegram_id}")
+def get_client_bookings(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    bookings = conn.execute(
+        """SELECT b.*, m.name as master_name, s.name as service_name, s.price
+           FROM bookings b JOIN masters m ON b.master_id=m.id JOIN services s ON b.service_id=s.id
+           WHERE b.client_telegram_id=? ORDER BY b.date DESC, b.time DESC""",
+        (telegram_id,)
+    ).fetchall()
+    return [dict(b) for b in bookings]
