@@ -6,8 +6,6 @@ import sqlite3
 import os
 import httpx
 from datetime import datetime, timedelta
-import asyncio
-from collections import defaultdict
 
 app = FastAPI(title="Beauty Bot API")
 
@@ -42,10 +40,10 @@ def init_db():
             instagram TEXT,
             telegram_id TEXT,
             bot_token TEXT,
-            rating REAL DEFAULT 0,
-            rating_count INTEGER DEFAULT 0,
             work_start TEXT DEFAULT '09:00',
-            work_end TEXT DEFAULT '20:00'
+            work_end TEXT DEFAULT '20:00',
+            rating REAL DEFAULT 0,
+            rating_count INTEGER DEFAULT 0
         )
     """)
     
@@ -218,13 +216,13 @@ async def notify_master(master_bot_token: str, master_telegram_id: str, message:
         print(f"Notify error: {e}")
 
 
-async def send_message_to_client(bot_token: str, telegram_id: str, message: str):
-    if not bot_token or not telegram_id:
+async def send_message_to_client(telegram_id: str, message: str):
+    if not telegram_id:
         return
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
-                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
                 json={"chat_id": telegram_id, "text": message, "parse_mode": "Markdown"}
             )
     except Exception as e:
@@ -387,10 +385,10 @@ def set_master_telegram(master_id: int, telegram_id: str, conn: sqlite3.Connecti
     return {"status": "ok"}
 
 
-# ========== REGISTRATION ==========
+# ========== РЕГИСТРАЦИЯ ==========
 
 @app.post("/register-request")
-async def register_request(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+def register_request(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     existing = conn.execute("SELECT id FROM register_requests WHERE telegram_id=?", (data["telegram_id"],)).fetchone()
     if existing:
         raise HTTPException(409, "Request already exists")
@@ -422,7 +420,7 @@ def approve_master(telegram_id: str, conn: sqlite3.Connection = Depends(get_db))
     return {"status": "ok"}
 
 
-# ========== BOOKINGS ==========
+# ========== ЗАПИСИ ==========
 
 @app.post("/bookings")
 async def create_booking(data: dict, conn: sqlite3.Connection = Depends(get_db)):
@@ -452,7 +450,6 @@ async def create_booking(data: dict, conn: sqlite3.Connection = Depends(get_db))
     conn.commit()
     booking_id = cursor.lastrowid
     
-    # Отправляем уведомление мастеру
     if master["bot_token"] and master["telegram_id"]:
         message = (
             f"🌸 *Новая запись!*\n\n"
@@ -477,7 +474,7 @@ def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
 
 
 @app.patch("/bookings/{booking_id}/status")
-async def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
+async def update_master_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
     booking = conn.execute(
         """SELECT b.*, m.name as master_name, m.bot_token, s.name as service_name 
            FROM bookings b 
@@ -494,13 +491,11 @@ async def update_booking_status(booking_id: int, status: str, conn: sqlite3.Conn
     
     if status == "confirmed":
         await send_message_to_client(
-            MASTER_BOT_TOKEN,
             booking["client_telegram_id"],
             f"🎉 *Запись подтверждена!*\n\n💅 {booking['service_name']}\n👩 {booking['master_name']}\n📅 {booking['date']} в {booking['time']}\n\nЖдём вас! ✨"
         )
     elif status == "cancelled":
         await send_message_to_client(
-            MASTER_BOT_TOKEN,
             booking["client_telegram_id"],
             f"😔 *Запись отменена*\n\n💅 {booking['service_name']}\n📅 {booking['date']} в {booking['time']}\n\nВы можете записаться снова. 🌸"
         )
@@ -530,9 +525,8 @@ def get_client_bookings(telegram_id: str, conn: sqlite3.Connection = Depends(get
     return [dict(b) for b in bookings]
 
 
-# ========== ИННОВАЦИИ (КРУТЫЕ ФИШКИ) ==========
+# ========== ИННОВАЦИИ ==========
 
-# 1. СИСТЕМА РЕЙТИНГА
 @app.post("/reviews")
 def add_review(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (data["booking_id"],)).fetchone()
@@ -544,7 +538,6 @@ def add_review(data: dict, conn: sqlite3.Connection = Depends(get_db)):
         (data["booking_id"], booking["master_id"], booking["client_telegram_id"], data["rating"], data.get("comment"))
     )
     
-    # Обновляем рейтинг мастера
     avg_rating = conn.execute(
         "SELECT AVG(rating) as avg_r, COUNT(*) as cnt FROM reviews WHERE master_id=?",
         (booking["master_id"],)
@@ -567,7 +560,6 @@ def get_master_reviews(master_id: int, conn: sqlite3.Connection = Depends(get_db
     return [dict(r) for r in reviews]
 
 
-# 2. ПРОМОКОДЫ
 @app.post("/apply-promo")
 def apply_promo(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     promo = conn.execute(
@@ -583,18 +575,16 @@ def apply_promo(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     return {"status": "ok", "discount_percent": promo["discount_percent"]}
 
 
-# 3. НАПОМИНАНИЯ (автоматические)
 @app.get("/send-reminders")
 async def send_reminders(conn: sqlite3.Connection = Depends(get_db)):
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     bookings = conn.execute(
-        "SELECT b.*, m.name as master_name, m.bot_token FROM bookings b JOIN masters m ON b.master_id=m.id WHERE b.date=? AND b.status='confirmed' AND b.reminder_sent=0",
+        "SELECT b.*, m.name as master_name FROM bookings b JOIN masters m ON b.master_id=m.id WHERE b.date=? AND b.status='confirmed' AND b.reminder_sent=0",
         (tomorrow,)
     ).fetchall()
     
     for booking in bookings:
         await send_message_to_client(
-            MASTER_BOT_TOKEN,
             booking["client_telegram_id"],
             f"⏰ *Напоминание!*\n\nЗавтра {booking['date']} в {booking['time']} запись к {booking['master_name']}.\n\nЖдём вас! ✨"
         )
@@ -603,7 +593,6 @@ async def send_reminders(conn: sqlite3.Connection = Depends(get_db)):
     return {"sent": len(bookings)}
 
 
-# 4. СТАТИСТИКА ДЛЯ МАСТЕРА
 @app.get("/masters/{master_id}/stats")
 def get_master_stats(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     total_bookings = conn.execute(
@@ -629,20 +618,7 @@ def get_master_stats(master_id: int, conn: sqlite3.Connection = Depends(get_db))
     }
 
 
-# 5. ПОИСК БЛИЖАЙШИХ МАСТЕРОВ (геолокация)
-@app.get("/masters/nearby")
-def get_nearby_masters(lat: float, lon: float, radius_km: float = 5, conn: sqlite3.Connection = Depends(get_db)):
-    # Упрощённая формула (в реальности лучше использовать PostGIS)
-    masters = conn.execute("SELECT * FROM masters").fetchall()
-    nearby = []
-    for m in masters:
-        # Приблизительное расстояние (Haversine упрощённо)
-        distance = ((float(m["lat"]) - lat) ** 2 + (float(m["lon"]) - lon) ** 2) ** 0.5 * 111
-        if distance <= radius_km:
-            nearby.append(dict(m))
-    return nearby
-
-
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
