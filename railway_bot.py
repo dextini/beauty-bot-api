@@ -4,6 +4,7 @@ import os
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,8 +15,7 @@ API_URL = os.getenv("API_URL", "https://beauty-bot-api-production.up.railway.app
 bot = Bot(token=MASTER_BOT_TOKEN)
 dp = Dispatcher()
 
-# ЗАМЕНИ НА СВОЙ TELEGRAM ID (узнай у @userinfobot)
-ADMIN_IDS = [123456789]
+ADMIN_IDS = [123456789]  # ЗАМЕНИ НА СВОЙ ID
 
 
 async def api_request(method: str, endpoint: str, data=None):
@@ -28,7 +28,15 @@ async def api_request(method: str, endpoint: str, data=None):
 
 @dp.message(CommandStart())
 async def start(message: types.Message):
-    await message.answer("👑 Бот администратора работает на Railway!\n\n/pending — заявки\n/approve ID — одобрить\n/reject ID — отклонить")
+    await message.answer(
+        "👑 *Beauty Bot Admin Panel*\n\n"
+        "📋 /pending — заявки мастеров\n"
+        "✅ /approve ID — одобрить\n"
+        "❌ /reject ID — отклонить\n"
+        "📊 /stats — общая статистика\n"
+        "🎫 /add_promo КОД % ДНИ — создать промокод",
+        parse_mode="Markdown"
+    )
 
 
 @dp.message(Command("pending"))
@@ -41,7 +49,14 @@ async def pending(message: types.Message):
         await message.answer("📭 Нет новых заявок")
         return
     for r in requests:
-        await message.answer(f"🆔 ID: `{r['telegram_id']}`\n👤 Имя: {r['name']}\n📍 Адрес: {r['address']}\n📞 Телефон: {r['phone']}\n\n✅ /approve {r['telegram_id']}", parse_mode="Markdown")
+        await message.answer(
+            f"🆔 ID: `{r['telegram_id']}`\n"
+            f"👤 Имя: {r['name']}\n"
+            f"📍 Адрес: {r['address']}\n"
+            f"📞 Телефон: {r['phone']}\n"
+            f"✅ /approve {r['telegram_id']}",
+            parse_mode="Markdown"
+        )
 
 
 @dp.message(Command("approve"))
@@ -70,6 +85,30 @@ async def reject(message: types.Message):
         await message.answer("❌ Формат: `/reject TELEGRAM_ID`", parse_mode="Markdown")
         return
     await message.answer(f"❌ Мастер `{parts[1]}` отклонён", parse_mode="Markdown")
+
+
+@dp.message(Command("add_promo"))
+async def add_promo(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+    parts = message.text.split()
+    if len(parts) < 4:
+        await message.answer("❌ Формат: `/add_promo КОД СКИДКА% ДНЕЙ`\nПример: `/add_promo SUMMER20 20 30`", parse_mode="Markdown")
+        return
+    
+    code = parts[1].upper()
+    discount = int(parts[2])
+    days = int(parts[3])
+    
+    valid_until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+    
+    async with aiohttp.ClientSession() as s:
+        async with s.post(f"{API_URL}/add-promo", json={"code": code, "discount_percent": discount, "valid_until": valid_until, "max_uses": 100}) as r:
+            if r.status == 200:
+                await message.answer(f"✅ Промокод `{code}` создан!\nСкидка {discount}% до {valid_until}", parse_mode="Markdown")
+            else:
+                await message.answer("❌ Ошибка при создании промокода")
 
 
 async def main():
