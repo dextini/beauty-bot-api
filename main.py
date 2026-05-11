@@ -165,6 +165,14 @@ def get_masters(conn: sqlite3.Connection = Depends(get_db)):
     return result
 
 
+@app.get("/masters/by-telegram/{telegram_id}")
+def get_master_by_telegram(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT * FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(status_code=404, detail="Master not found")
+    return dict(master)
+
+
 @app.get("/masters/{master_id}/slots")
 def get_free_slots(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
@@ -226,6 +234,46 @@ async def create_booking(data: dict, conn: sqlite3.Connection = Depends(get_db))
     
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
     return dict(booking)
+
+
+@app.post("/register-request")
+async def register_request(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    existing = conn.execute("SELECT id FROM register_requests WHERE telegram_id=?", (data["telegram_id"],)).fetchone()
+    if existing:
+        raise HTTPException(409, "Request already exists")
+    conn.execute(
+        "INSERT INTO register_requests (telegram_id, name, address, phone) VALUES (?,?,?,?)",
+        (data["telegram_id"], data["name"], data["address"], data["phone"])
+    )
+    conn.commit()
+    return {"status": "ok"}
+
+
+@app.get("/register-requests/pending")
+def get_pending_requests(conn: sqlite3.Connection = Depends(get_db)):
+    requests = conn.execute("SELECT * FROM register_requests WHERE status='pending'").fetchall()
+    return [dict(r) for r in requests]
+
+
+@app.post("/approve-master/{telegram_id}")
+def approve_master(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    request = conn.execute("SELECT * FROM register_requests WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not request:
+        raise HTTPException(404, "Request not found")
+    conn.execute(
+        "INSERT INTO masters (name, address, phone, telegram_id, lat, lon, description) VALUES (?,?,?,?,?,?,?)",
+        (request["name"], request["address"], request["phone"], telegram_id, 55.751244, 37.618423, "Новый мастер")
+    )
+    conn.execute("UPDATE register_requests SET status='approved' WHERE telegram_id=?", (telegram_id,))
+    conn.commit()
+    return {"status": "ok"}
+
+
+@app.patch("/masters/{master_id}/bot-token")
+def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (bot_token, master_id))
+    conn.commit()
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":
