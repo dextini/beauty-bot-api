@@ -115,7 +115,7 @@
 </div>
 
 <script>
-const API_URL = 'https://beauty-bot-api-production.up.railway.app';
+const API_URL = 'https://intuitive-fascination-production-ce82.up.railway.app';
 const tg = window.Telegram.WebApp;
 tg.ready(); tg.expand();
 
@@ -127,7 +127,7 @@ async function api(path) {
 }
 
 async function loadMasters() {
-  masters = wait api('/masters');
+  masters = await api('/masters');
   initMap();
 }
 
