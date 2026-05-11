@@ -1,23 +1,36 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import sqlite3
 import os
-import httpx
 from datetime import datetime, timedelta
 
 app = FastAPI(title="Beauty Bot API")
 
+# === НАСТРОЙКА CORS (ПОЛНОСТЬЮ) ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=["https://project-ev8r3.vercel.app", "https://project-ev8r3.vercel.app/*", "*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
+# Обработка preflight (OPTIONS) запросов вручную
+@app.options("/{path:path}")
+async def options_handler(path: str):
+    return JSONResponse(
+        content={"message": "OK"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        },
+    )
+
 DB_PATH = "beauty.db"
-MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 DEFAULT_WORK_START = "09:00"
 DEFAULT_WORK_END = "20:00"
 SLOT_INTERVAL = 30
@@ -188,45 +201,6 @@ def generate_slots(work_start: str, work_end: str, interval: int = 30) -> List[s
         slots.append(current.strftime("%H:%M"))
         current += timedelta(minutes=interval)
     return slots
-
-
-async def notify_master(master_bot_token: str, master_telegram_id: str, message: str, booking_id: int = None):
-    if not master_bot_token or not master_telegram_id:
-        return
-    try:
-        async with httpx.AsyncClient() as client:
-            reply_markup = None
-            if booking_id:
-                reply_markup = {
-                    "inline_keyboard": [[
-                        {"text": "✅ Подтвердить", "callback_data": f"confirm_{booking_id}"},
-                        {"text": "❌ Отменить", "callback_data": f"cancel_{booking_id}"}
-                    ]]
-                }
-            await client.post(
-                f"https://api.telegram.org/bot{master_bot_token}/sendMessage",
-                json={
-                    "chat_id": master_telegram_id,
-                    "text": message,
-                    "parse_mode": "Markdown",
-                    "reply_markup": reply_markup
-                }
-            )
-    except Exception as e:
-        print(f"Notify error: {e}")
-
-
-async def send_message_to_client(telegram_id: str, message: str):
-    if not telegram_id:
-        return
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
-                json={"chat_id": telegram_id, "text": message, "parse_mode": "Markdown"}
-            )
-    except Exception as e:
-        print(f"Send message error: {e}")
 
 
 # ========== ОСНОВНЫЕ ЭНДПОИНТЫ ==========
@@ -450,17 +424,6 @@ async def create_booking(data: dict, conn: sqlite3.Connection = Depends(get_db))
     conn.commit()
     booking_id = cursor.lastrowid
     
-    if master["bot_token"] and master["telegram_id"]:
-        message = (
-            f"🌸 *Новая запись!*\n\n"
-            f"👩 Клиент: {data['client_name']}\n"
-            f"💅 Услуга: {service['name']}\n"
-            f"💰 Цена: {service['price']} ₽\n"
-            f"📅 Дата: {data['date']}\n"
-            f"🕐 Время: {data['time']}"
-        )
-        await notify_master(master["bot_token"], master["telegram_id"], message, booking_id)
-    
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
     return dict(booking)
 
@@ -474,31 +437,13 @@ def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
 
 
 @app.patch("/bookings/{booking_id}/status")
-async def update_master_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
-    booking = conn.execute(
-        """SELECT b.*, m.name as master_name, m.bot_token, s.name as service_name 
-           FROM bookings b 
-           JOIN masters m ON b.master_id = m.id 
-           JOIN services s ON b.service_id = s.id 
-           WHERE b.id = ?""",
-        (booking_id,)
-    ).fetchone()
+async def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
+    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
     if not booking:
         raise HTTPException(404, "Booking not found")
     
     conn.execute("UPDATE bookings SET status = ? WHERE id = ?", (status, booking_id))
     conn.commit()
-    
-    if status == "confirmed":
-        await send_message_to_client(
-            booking["client_telegram_id"],
-            f"🎉 *Запись подтверждена!*\n\n💅 {booking['service_name']}\n👩 {booking['master_name']}\n📅 {booking['date']} в {booking['time']}\n\nЖдём вас! ✨"
-        )
-    elif status == "cancelled":
-        await send_message_to_client(
-            booking["client_telegram_id"],
-            f"😔 *Запись отменена*\n\n💅 {booking['service_name']}\n📅 {booking['date']} в {booking['time']}\n\nВы можете записаться снова. 🌸"
-        )
     
     return {"status": "ok", "booking_id": booking_id, "new_status": status}
 
@@ -584,10 +529,6 @@ async def send_reminders(conn: sqlite3.Connection = Depends(get_db)):
     ).fetchall()
     
     for booking in bookings:
-        await send_message_to_client(
-            booking["client_telegram_id"],
-            f"⏰ *Напоминание!*\n\nЗавтра {booking['date']} в {booking['time']} запись к {booking['master_name']}.\n\nЖдём вас! ✨"
-        )
         conn.execute("UPDATE bookings SET reminder_sent=1 WHERE id=?", (booking["id"],))
     conn.commit()
     return {"sent": len(bookings)}
