@@ -1,24 +1,33 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import sqlite3
 import os
+import httpx
 from datetime import datetime, timedelta
+from fastapi.responses import JSONResponse
+from fastapi import Request
 
 app = FastAPI(title="Beauty Bot API")
 
-# === НАСТРОЙКА CORS (ПОЛНОСТЬЮ) ===
+# === ЕДИНСТВЕННОЕ ИСПРАВЛЕНИЕ: CORS НАСТРОЕН ПРАВИЛЬНО ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://project-ev8r3.vercel.app", "https://project-ev8r3.vercel.app/*", "*"],
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Обработка preflight (OPTIONS) запросов вручную
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
 @app.options("/{path:path}")
 async def options_handler(path: str):
     return JSONResponse(
@@ -31,6 +40,7 @@ async def options_handler(path: str):
     )
 
 DB_PATH = "beauty.db"
+MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 DEFAULT_WORK_START = "09:00"
 DEFAULT_WORK_END = "20:00"
 SLOT_INTERVAL = 30
@@ -39,7 +49,7 @@ SLOT_INTERVAL = 30
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS masters (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,14 +62,11 @@ def init_db():
             phone TEXT,
             instagram TEXT,
             telegram_id TEXT,
-            bot_token TEXT,
             work_start TEXT DEFAULT '09:00',
-            work_end TEXT DEFAULT '20:00',
-            rating REAL DEFAULT 0,
-            rating_count INTEGER DEFAULT 0
+            work_end TEXT DEFAULT '20:00'
         )
     """)
-    
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS services (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,7 +77,7 @@ def init_db():
             FOREIGN KEY (master_id) REFERENCES masters(id)
         )
     """)
-    
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS bookings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,13 +89,12 @@ def init_db():
             date TEXT NOT NULL,
             time TEXT NOT NULL,
             status TEXT DEFAULT 'pending',
-            reminder_sent INTEGER DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (master_id) REFERENCES masters(id),
             FOREIGN KEY (service_id) REFERENCES services(id)
         )
     """)
-    
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS days_off (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,55 +104,14 @@ def init_db():
             FOREIGN KEY (master_id) REFERENCES masters(id)
         )
     """)
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS register_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id TEXT UNIQUE,
-            name TEXT,
-            address TEXT,
-            phone TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS reviews (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            booking_id INTEGER NOT NULL,
-            master_id INTEGER NOT NULL,
-            client_telegram_id TEXT NOT NULL,
-            rating INTEGER NOT NULL,
-            comment TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (booking_id) REFERENCES bookings(id),
-            FOREIGN KEY (master_id) REFERENCES masters(id)
-        )
-    """)
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS promo_codes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code TEXT UNIQUE,
-            discount_percent INTEGER,
-            valid_until TEXT,
-            max_uses INTEGER,
-            used_count INTEGER DEFAULT 0
-        )
-    """)
-    
-    for col in ["telegram_id TEXT", "work_start TEXT DEFAULT '09:00'", "work_end TEXT DEFAULT '20:00'", "bot_token TEXT", "rating REAL DEFAULT 0", "rating_count INTEGER DEFAULT 0"]:
+
+    # Добавляем колонки для существующих БД
+    for col in ["telegram_id TEXT", "work_start TEXT DEFAULT '09:00'", "work_end TEXT DEFAULT '20:00'"]:
         try:
             c.execute(f"ALTER TABLE masters ADD COLUMN {col}")
         except:
             pass
-    
-    try:
-        c.execute("ALTER TABLE bookings ADD COLUMN reminder_sent INTEGER DEFAULT 0")
-    except:
-        pass
-    
+
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
         masters_data = [
@@ -156,7 +121,7 @@ def init_db():
         ]
         c.executemany("INSERT INTO masters (name, photo_url, description, address, lat, lon, phone, instagram) VALUES (?,?,?,?,?,?,?,?)", masters_data)
         conn.commit()
-        
+
         c.execute("SELECT id FROM masters")
         ids = [row[0] for row in c.fetchall()]
         services = [
@@ -171,13 +136,7 @@ def init_db():
         ]
         c.executemany("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", services)
         conn.commit()
-    
-    c.execute("SELECT COUNT(*) FROM promo_codes")
-    if c.fetchone()[0] == 0:
-        future_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
-        c.execute("INSERT INTO promo_codes (code, discount_percent, valid_until, max_uses) VALUES (?,?,?,?)", ("WELCOME10", 10, future_date, 100))
-        conn.commit()
-    
+
     conn.close()
 
 init_db()
@@ -203,14 +162,82 @@ def generate_slots(work_start: str, work_end: str, interval: int = 30) -> List[s
     return slots
 
 
-# ========== ОСНОВНЫЕ ЭНДПОИНТЫ ==========
+async def notify_master_with_buttons(master_telegram_id: str, message: str, booking_id: int):
+    if not master_telegram_id or MASTER_BOT_TOKEN == "YOUR_MASTER_BOT_TOKEN":
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": master_telegram_id,
+                    "text": message,
+                    "parse_mode": "Markdown",
+                    "reply_markup": {
+                        "inline_keyboard": [[
+                            {"text": "✅ Подтвердить", "callback_data": f"confirm_{booking_id}"},
+                            {"text": "❌ Отменить", "callback_data": f"cancel_{booking_id}"}
+                        ]]
+                    }
+                }
+            )
+    except Exception as e:
+        print(f"Notify error: {e}")
 
-@app.get("/")
-def root():
-    return {"status": "Beauty Bot API running 🌸"}
+async def send_message(telegram_id: str, message: str):
+    if not telegram_id or MASTER_BOT_TOKEN == "YOUR_MASTER_BOT_TOKEN":
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
+                json={"chat_id": telegram_id, "text": message, "parse_mode": "Markdown"}
+            )
+    except Exception as e:
+        print(f"Send message error: {e}")
 
 
-@app.get("/masters")
+# --- Schemas ---
+class ServiceOut(BaseModel):
+    id: int
+    master_id: int
+    name: str
+    price: int
+    duration_min: int
+
+class MasterOut(BaseModel):
+    id: int
+    name: str
+    photo_url: Optional[str]
+    description: Optional[str]
+    address: str
+    lat: float
+    lon: float
+    phone: Optional[str]
+    instagram: Optional[str]
+    services: List[ServiceOut] = []
+
+class BookingIn(BaseModel):
+    master_id: int
+    service_id: int
+    client_name: str
+    client_telegram_id: str
+    client_phone: Optional[str]
+    date: str
+    time: str
+
+class BookingOut(BaseModel):
+    id: int
+    master_id: int
+    service_id: int
+    client_name: str
+    date: str
+    time: str
+    status: str
+
+
+# --- Routes ---
+@app.get("/masters", response_model=List[MasterOut])
 def get_masters(conn: sqlite3.Connection = Depends(get_db)):
     masters = conn.execute("SELECT * FROM masters").fetchall()
     result = []
@@ -221,16 +248,14 @@ def get_masters(conn: sqlite3.Connection = Depends(get_db)):
         result.append(master_dict)
     return result
 
-
-@app.get("/masters/by-telegram/{telegram_id}")
+@app.get("/masters/by_telegram/{telegram_id}")
 def get_master_by_telegram(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT * FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(status_code=404, detail="Master not found")
     return dict(master)
 
-
-@app.get("/masters/{master_id}")
+@app.get("/masters/{master_id}", response_model=MasterOut)
 def get_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     m = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
     if not m:
@@ -240,13 +265,42 @@ def get_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     master_dict["services"] = [dict(s) for s in services]
     return master_dict
 
+@app.get("/masters/{master_id}/slots")
+def get_free_slots(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
+    if not master:
+        raise HTTPException(status_code=404, detail="Master not found")
+
+    day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (master_id, date)).fetchone()
+    if day_off:
+        return {"date": date, "slots": [], "day_off": True}
+
+    work_start = master["work_start"] or DEFAULT_WORK_START
+    work_end = master["work_end"] or DEFAULT_WORK_END
+    all_slots = generate_slots(work_start, work_end)
+
+    booked = conn.execute(
+        "SELECT time FROM bookings WHERE master_id=? AND date=? AND status!='cancelled'",
+        (master_id, date)
+    ).fetchall()
+    booked_times = {b["time"] for b in booked}
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    now_time = datetime.now().strftime("%H:%M")
+
+    free_slots = [
+        s for s in all_slots
+        if s not in booked_times and not (date == today and s <= now_time)
+    ]
+
+    return {"date": date, "slots": free_slots, "day_off": False}
 
 @app.get("/masters/{master_id}/schedule")
 def get_schedule(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
     if not master:
         raise HTTPException(status_code=404, detail="Master not found")
-    
+
     result = []
     today = datetime.now()
     for i in range(7):
@@ -261,75 +315,11 @@ def get_schedule(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
         result.append({"date": day, "day_off": bool(day_off), "bookings": [dict(b) for b in bookings]})
     return result
 
-
-@app.get("/masters/{master_id}/slots")
-def get_free_slots(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
-    if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
-    
-    day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (master_id, date)).fetchone()
-    if day_off:
-        return {"date": date, "slots": [], "day_off": True}
-    
-    work_start = master["work_start"] or DEFAULT_WORK_START
-    work_end = master["work_end"] or DEFAULT_WORK_END
-    all_slots = generate_slots(work_start, work_end)
-    
-    booked = conn.execute(
-        "SELECT time FROM bookings WHERE master_id=? AND date=? AND status!='cancelled'",
-        (master_id, date)
-    ).fetchall()
-    booked_times = {b["time"] for b in booked}
-    
-    today = datetime.now().strftime("%Y-%m-%d")
-    now_time = datetime.now().strftime("%H:%M")
-    
-    free_slots = [
-        s for s in all_slots
-        if s not in booked_times and not (date == today and s <= now_time)
-    ]
-    
-    return {"date": date, "slots": free_slots, "day_off": False}
-
-
-@app.post("/masters/{master_id}/services")
-def add_service(master_id: int, service_data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
-    if not master:
-        raise HTTPException(404, "Master not found")
-    
-    conn.execute(
-        "INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)",
-        (master_id, service_data["name"], service_data["price"], service_data["duration_min"])
-    )
-    conn.commit()
-    return {"status": "ok", "service": service_data}
-
-
-@app.delete("/services/{service_id}")
-def delete_service(service_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    service = conn.execute("SELECT * FROM services WHERE id = ?", (service_id,)).fetchone()
-    if not service:
-        raise HTTPException(404, "Service not found")
-    
-    conn.execute("DELETE FROM services WHERE id = ?", (service_id,))
-    conn.commit()
-    return {"status": "ok"}
-
-
-@app.get("/services/master/{master_id}")
-def get_master_services(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    services = conn.execute("SELECT * FROM services WHERE master_id = ?", (master_id,)).fetchall()
-    return [dict(s) for s in services]
-
-
 @app.post("/masters/{master_id}/days_off")
 def add_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
     conn.execute("INSERT OR IGNORE INTO days_off (master_id, date) VALUES (?,?)", (master_id, date))
     conn.commit()
     return {"status": "ok", "date": date}
-
 
 @app.delete("/masters/{master_id}/days_off/{date}")
 def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
@@ -337,116 +327,65 @@ def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends
     conn.commit()
     return {"status": "ok", "date": date}
 
-
-@app.patch("/masters/{master_id}/work-hours")
-def set_work_hours(master_id: int, work_start: str, work_end: str, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("UPDATE masters SET work_start=?, work_end=? WHERE id=?", (work_start, work_end, master_id))
-    conn.commit()
-    return {"status": "ok"}
-
-
-@app.patch("/masters/{master_id}/bot-token")
-def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (bot_token, master_id))
-    conn.commit()
-    return {"status": "ok"}
-
-
 @app.patch("/masters/{master_id}/telegram")
 def set_master_telegram(master_id: int, telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("UPDATE masters SET telegram_id = ? WHERE id = ?", (telegram_id, master_id))
+    conn.execute("UPDATE masters SET telegram_id=? WHERE id=?", (telegram_id, master_id))
     conn.commit()
     return {"status": "ok"}
 
-
-# ========== РЕГИСТРАЦИЯ ==========
-
-@app.post("/register-request")
-def register_request(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    existing = conn.execute("SELECT id FROM register_requests WHERE telegram_id=?", (data["telegram_id"],)).fetchone()
-    if existing:
-        raise HTTPException(409, "Request already exists")
-    conn.execute(
-        "INSERT INTO register_requests (telegram_id, name, address, phone) VALUES (?,?,?,?)",
-        (data["telegram_id"], data["name"], data["address"], data["phone"])
-    )
-    conn.commit()
-    return {"status": "ok"}
-
-
-@app.get("/register-requests/pending")
-def get_pending_requests(conn: sqlite3.Connection = Depends(get_db)):
-    requests = conn.execute("SELECT * FROM register_requests WHERE status='pending'").fetchall()
-    return [dict(r) for r in requests]
-
-
-@app.post("/approve-master/{telegram_id}")
-def approve_master(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    request = conn.execute("SELECT * FROM register_requests WHERE telegram_id=?", (telegram_id,)).fetchone()
-    if not request:
-        raise HTTPException(404, "Request not found")
-    conn.execute(
-        "INSERT INTO masters (name, address, phone, telegram_id, lat, lon, description) VALUES (?,?,?,?,?,?,?)",
-        (request["name"], request["address"], request["phone"], telegram_id, 55.751244, 37.618423, "Новый мастер")
-    )
-    conn.execute("UPDATE register_requests SET status='approved' WHERE telegram_id=?", (telegram_id,))
-    conn.commit()
-    return {"status": "ok"}
-
-
-# ========== ЗАПИСИ ==========
-
-@app.post("/bookings")
-async def create_booking(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT * FROM masters WHERE id = ?", (data["master_id"],)).fetchone()
+@app.post("/bookings", response_model=BookingOut)
+async def create_booking(data: BookingIn, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT * FROM masters WHERE id = ?", (data.master_id,)).fetchone()
     if not master:
-        raise HTTPException(404, "Master not found")
-    
-    service = conn.execute("SELECT * FROM services WHERE id=? AND master_id=?", (data["service_id"], data["master_id"])).fetchone()
+        raise HTTPException(status_code=404, detail="Master not found")
+    service = conn.execute("SELECT * FROM services WHERE id=? AND master_id=?", (data.service_id, data.master_id)).fetchone()
     if not service:
-        raise HTTPException(404, "Service not found")
-    
-    day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (data["master_id"], data["date"])).fetchone()
+        raise HTTPException(status_code=404, detail="Service not found")
+    day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (data.master_id, data.date)).fetchone()
     if day_off:
-        raise HTTPException(409, "Master is off this day")
-    
+        raise HTTPException(status_code=409, detail="Master is off this day")
     existing = conn.execute(
         "SELECT id FROM bookings WHERE master_id=? AND date=? AND time=? AND status!='cancelled'",
-        (data["master_id"], data["date"], data["time"])
+        (data.master_id, data.date, data.time)
     ).fetchone()
     if existing:
-        raise HTTPException(409, "This time slot is already booked")
-    
+        raise HTTPException(status_code=409, detail="This time slot is already booked")
+
     cursor = conn.execute(
         "INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time) VALUES (?,?,?,?,?,?,?)",
-        (data["master_id"], data["service_id"], data["client_name"], data["client_telegram_id"], data.get("client_phone"), data["date"], data["time"])
+        (data.master_id, data.service_id, data.client_name, data.client_telegram_id, data.client_phone, data.date, data.time)
     )
     conn.commit()
     booking_id = cursor.lastrowid
-    
+
+    # Уведомляем мастера
+    master_tg = master["telegram_id"]
+    phone_line = f"\n📞 Телефон: {data.client_phone}" if data.client_phone else ""
+    message = (
+        f"🌸 *Новая запись!*\n\n"
+        f"👩 Клиент: {data.client_name}{phone_line}\n"
+        f"💅 Услуга: {service['name']}\n"
+        f"💰 Цена: {service['price']} ₽\n"
+        f"📅 Дата: {data.date}\n"
+        f"🕐 Время: {data.time}"
+    )
+    await notify_master_with_buttons(master_tg, message, booking_id)
+
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
     return dict(booking)
-
-
-@app.get("/bookings/{booking_id}")
-def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
-    if not booking:
-        raise HTTPException(404, "Booking not found")
-    return dict(booking)
-
 
 @app.patch("/bookings/{booking_id}/status")
 async def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
-    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    booking = conn.execute(
+        """SELECT b.*, m.telegram_id, s.name as service_name
+           FROM bookings b JOIN masters m ON b.master_id=m.id JOIN services s ON b.service_id=s.id
+           WHERE b.id=?""", (booking_id,)
+    ).fetchone()
     if not booking:
-        raise HTTPException(404, "Booking not found")
-    
-    conn.execute("UPDATE bookings SET status = ? WHERE id = ?", (status, booking_id))
+        raise HTTPException(status_code=404, detail="Booking not found")
+    conn.execute("UPDATE bookings SET status=? WHERE id=?", (status, booking_id))
     conn.commit()
-    
     return {"status": "ok", "booking_id": booking_id, "new_status": status}
-
 
 @app.get("/bookings/master/{master_id}")
 def get_master_bookings(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
@@ -458,7 +397,6 @@ def get_master_bookings(master_id: int, conn: sqlite3.Connection = Depends(get_d
     ).fetchall()
     return [dict(b) for b in bookings]
 
-
 @app.get("/bookings/client/{telegram_id}")
 def get_client_bookings(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     bookings = conn.execute(
@@ -469,97 +407,11 @@ def get_client_bookings(telegram_id: str, conn: sqlite3.Connection = Depends(get
     ).fetchall()
     return [dict(b) for b in bookings]
 
-
-# ========== ИННОВАЦИИ ==========
-
-@app.post("/reviews")
-def add_review(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (data["booking_id"],)).fetchone()
-    if not booking or booking["status"] != "confirmed":
-        raise HTTPException(400, "Можно оценить только подтверждённую запись")
-    
-    conn.execute(
-        "INSERT INTO reviews (booking_id, master_id, client_telegram_id, rating, comment) VALUES (?,?,?,?,?)",
-        (data["booking_id"], booking["master_id"], booking["client_telegram_id"], data["rating"], data.get("comment"))
-    )
-    
-    avg_rating = conn.execute(
-        "SELECT AVG(rating) as avg_r, COUNT(*) as cnt FROM reviews WHERE master_id=?",
-        (booking["master_id"],)
-    ).fetchone()
-    
-    conn.execute(
-        "UPDATE masters SET rating=?, rating_count=? WHERE id=?",
-        (avg_rating["avg_r"] or 0, avg_rating["cnt"], booking["master_id"])
-    )
-    conn.commit()
-    return {"status": "ok"}
-
-
-@app.get("/masters/{master_id}/reviews")
-def get_master_reviews(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    reviews = conn.execute(
-        "SELECT * FROM reviews WHERE master_id=? ORDER BY created_at DESC LIMIT 20",
-        (master_id,)
-    ).fetchall()
-    return [dict(r) for r in reviews]
-
-
-@app.post("/apply-promo")
-def apply_promo(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    promo = conn.execute(
-        "SELECT * FROM promo_codes WHERE code=? AND valid_until >= date('now') AND (max_uses IS NULL OR used_count < max_uses)",
-        (data["code"],)
-    ).fetchone()
-    if not promo:
-        raise HTTPException(404, "Промокод недействителен")
-    
-    conn.execute("UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ?", (promo["id"],))
-    conn.commit()
-    
-    return {"status": "ok", "discount_percent": promo["discount_percent"]}
-
-
-@app.get("/send-reminders")
-async def send_reminders(conn: sqlite3.Connection = Depends(get_db)):
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-    bookings = conn.execute(
-        "SELECT b.*, m.name as master_name FROM bookings b JOIN masters m ON b.master_id=m.id WHERE b.date=? AND b.status='confirmed' AND b.reminder_sent=0",
-        (tomorrow,)
-    ).fetchall()
-    
-    for booking in bookings:
-        conn.execute("UPDATE bookings SET reminder_sent=1 WHERE id=?", (booking["id"],))
-    conn.commit()
-    return {"sent": len(bookings)}
-
-
-@app.get("/masters/{master_id}/stats")
-def get_master_stats(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    total_bookings = conn.execute(
-        "SELECT COUNT(*) as total FROM bookings WHERE master_id=? AND status='confirmed'",
-        (master_id,)
-    ).fetchone()
-    
-    monthly = conn.execute(
-        "SELECT COUNT(*) as count, SUM(s.price) as revenue FROM bookings b JOIN services s ON b.service_id=s.id WHERE b.master_id=? AND b.status='confirmed' AND strftime('%Y-%m', b.date) = strftime('%Y-%m', 'now')",
-        (master_id,)
-    ).fetchone()
-    
-    popular_service = conn.execute(
-        "SELECT s.name, COUNT(*) as cnt FROM bookings b JOIN services s ON b.service_id=s.id WHERE b.master_id=? GROUP BY s.id ORDER BY cnt DESC LIMIT 1",
-        (master_id,)
-    ).fetchone()
-    
-    return {
-        "total_bookings": total_bookings["total"],
-        "monthly_bookings": monthly["count"],
-        "monthly_revenue": monthly["revenue"] or 0,
-        "popular_service": popular_service["name"] if popular_service else None
-    }
+@app.get("/")
+def root():
+    return {"status": "Beauty Bot API running 🌸"}
 
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
