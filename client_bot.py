@@ -22,7 +22,7 @@ dp = Dispatcher()
 @dp.message(CommandStart())
 async def start(message: types.Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗺️ Открыть карту мастеров", web_app=WebAppInfo(url=f"{API_URL}/masters"))]
+        [InlineKeyboardButton(text="🗺️ Открыть карту мастеров", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))]
     ])
     await message.answer(
         "💅 *Добро пожаловать в Beauty Map!*\n\n"
