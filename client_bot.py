@@ -1,3 +1,47 @@
+Skip to content
+dextini
+beauty-bot-api
+Repository navigation
+Code
+Issues
+Pull requests
+Actions
+Projects
+Wiki
+Security and quality
+1
+ (1)
+Insights
+Settings
+Files
+Go to file
+t
+T
+Procfile.txt
+beauty.db
+client_bot.py
+index (1).html
+main.py
+master_bot.py
+railway_bot.py
+requirements.txt
+beauty-bot-api
+/client_bot.py
+dextini
+dextini
+client_bot.py
+46b5185
+ · 
+now
+beauty-bot-api
+/client_bot.py
+
+Code
+
+Blame
+72 lines (56 loc) · 3.05 KB
+async def start(message: types.Message):
+Code view is read-only. Switch to the editor.
 import asyncio
 import logging
 import os
@@ -70,3 +114,27 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+Symbols
+Find definitions and references for functions and other symbols in this file by clicking a symbol below or in the code.
+
+Filter symbols
+r
+R
+const
+logger
+const
+BOT_TOKEN
+const
+API_URL
+const
+bot
+const
+dp
+func
+start
+const
+ADMIN_ID
+func
+register_master_bot
+func
+main
