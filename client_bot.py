@@ -81,7 +81,7 @@ async def start(message: types.Message):
 from aiogram.filters import Command
 
 # ЗАМЕНИ НА СВОЙ TELEGRAM ID (узнай у @userinfobot)
-ADMIN_ID = 123456789
+ADMIN_ID = 868528632
 
 @dp.message(Command("regbot"))
 async def register_master_bot(message: types.Message):
