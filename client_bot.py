@@ -22,11 +22,13 @@ dp = Dispatcher()
 @dp.message(CommandStart())
 async def start(message: types.Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗺️ Открыть карту мастеров", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))]
+        [InlineKeyboardButton(text="🗺️ Открыть карту мастеров", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))],
+        [InlineKeyboardButton(text="📝 Стать мастером", url="https://t.me/dextini")]
     ])
     await message.answer(
         "💅 *Добро пожаловать в Beauty Map!*\n\n"
-        "Нажми кнопку ниже, чтобы найти мастера рядом с тобой.",
+        "Нажми кнопку ниже, чтобы найти мастера рядом с тобой.\n\n"
+        "✂️ *Хотите стать мастером?* Нажмите кнопку «Стать мастером» и напишите мне в личные сообщения.",
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
