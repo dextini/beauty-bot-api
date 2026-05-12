@@ -333,6 +333,18 @@ def set_master_telegram(master_id: int, telegram_id: str, conn: sqlite3.Connecti
     conn.commit()
     return {"status": "ok"}
 
+# === НОВЫЙ ЭНДПОИНТ ДЛЯ СОХРАНЕНИЯ ТОКЕНА БОТА МАСТЕРА ===
+@app.patch("/masters/{master_id}/bot-token")
+def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connection = Depends(get_db)):
+    # Проверяем, существует ли мастер
+    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+    if not master:
+        raise HTTPException(status_code=404, detail="Master not found")
+    
+    conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (bot_token, master_id))
+    conn.commit()
+    return {"status": "ok", "message": "Bot token saved"}
+
 @app.post("/bookings", response_model=BookingOut)
 async def create_booking(data: BookingIn, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT * FROM masters WHERE id = ?", (data.master_id,)).fetchone()
@@ -358,7 +370,7 @@ async def create_booking(data: BookingIn, conn: sqlite3.Connection = Depends(get
     conn.commit()
     booking_id = cursor.lastrowid
 
-    # Уведомляем мастера
+    # Уведомляем мастера (если есть bot_token, уведомление пойдёт в его бота)
     master_tg = master["telegram_id"]
     phone_line = f"\n📞 Телефон: {data.client_phone}" if data.client_phone else ""
     message = (
