@@ -1,52 +1,9 @@
-Skip to content
-dextini
-beauty-bot-api
-Repository navigation
-Code
-Issues
-Pull requests
-Actions
-Projects
-Wiki
-Security and quality
-1
- (1)
-Insights
-Settings
-Files
-Go to file
-t
-T
-Procfile.txt
-beauty.db
-client_bot.py
-index (1).html
-main.py
-master_bot.py
-railway_bot.py
-requirements.txt
-beauty-bot-api
-/client_bot.py
-dextini
-dextini
-client_bot.py
-46b5185
- · 
-now
-beauty-bot-api
-/client_bot.py
-
-Code
-
-Blame
-72 lines (56 loc) · 3.05 KB
-async def start(message: types.Message):
-Code view is read-only. Switch to the editor.
 import asyncio
 import logging
 import os
+import aiohttp
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import WebAppInfo, InlineKeyboardButton, InlineKeyboardMarkup
 
 logging.basicConfig(level=logging.INFO)
@@ -61,6 +18,9 @@ if not BOT_TOKEN:
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# ЗАМЕНИ НА СВОЙ TELEGRAM ID (узнай у @userinfobot)
+ADMIN_ID = 868528632  # ← СЮДА ВСТАВЬ СВОЙ ID
 
 
 @dp.message(CommandStart())
@@ -78,11 +38,6 @@ async def start(message: types.Message):
     )
 
 
-from aiogram.filters import Command
-
-# ЗАМЕНИ НА СВОЙ TELEGRAM ID (узнай у @userinfobot)
-ADMIN_ID = 868528632
-
 @dp.message(Command("regbot"))
 async def register_master_bot(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -95,10 +50,7 @@ async def register_master_bot(message: types.Message):
     
     token = parts[1].strip()
     
-    # Отправляем запрос к API для сохранения токена
-    import aiohttp
     async with aiohttp.ClientSession() as session:
-        # Здесь нужно знать master_id. Пока сохраняем в переменную, потом привяжешь к нужному мастеру
         master_id = 1  # ВРЕМЕННО, потом заменишь на ID нужного мастера
         async with session.patch(f"{API_URL}/masters/{master_id}/bot-token?bot_token={token}") as resp:
             if resp.status == 200:
@@ -114,27 +66,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-Symbols
-Find definitions and references for functions and other symbols in this file by clicking a symbol below or in the code.
-
-Filter symbols
-r
-R
-const
-logger
-const
-BOT_TOKEN
-const
-API_URL
-const
-bot
-const
-dp
-func
-start
-const
-ADMIN_ID
-func
-register_master_bot
-func
-main
