@@ -3,3 +3,5 @@ uvicorn
 aiohttp
 aiogram==3.13.1
 httpx
+gspread
+oauth2client
