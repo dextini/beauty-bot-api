@@ -1,21 +1,28 @@
 import asyncio
 import logging
 import os
+import json
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
-from datetime import datetime
+from datetime import datetime, timedelta
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
-API_URL = os.getenv("API_URL", "https://beauty-bot-api-production.up.railway.app")
+API_URL = os.getenv("API_URL", "https://intuitive-fascination-production-ce82.up.railway.app")
 
 bot = Bot(token=MASTER_BOT_TOKEN)
 dp = Dispatcher()
 
 ADMIN_IDS = [123456789]  # ЗАМЕНИ НА СВОЙ ID
+
+# Переменные для Google Sheets
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
+SHEET_ID = os.getenv("SHEET_ID")
 
 
 async def api_request(method: str, endpoint: str, data=None):
@@ -34,7 +41,8 @@ async def start(message: types.Message):
         "✅ /approve ID — одобрить\n"
         "❌ /reject ID — отклонить\n"
         "📊 /stats — общая статистика\n"
-        "🎫 /add_promo КОД % ДНИ — создать промокод",
+        "🎫 /add_promo КОД % ДНИ — создать промокод\n"
+        "📥 /import_sheet — импорт мастеров из Google Таблицы",
         parse_mode="Markdown"
     )
 
@@ -109,6 +117,76 @@ async def add_promo(message: types.Message):
                 await message.answer(f"✅ Промокод `{code}` создан!\nСкидка {discount}% до {valid_until}", parse_mode="Markdown")
             else:
                 await message.answer("❌ Ошибка при создании промокода")
+
+
+# === ИМПОРТ ИЗ GOOGLE ТАБЛИЦ ===
+@dp.message(Command("import_sheet"))
+async def import_from_google_sheets(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+    
+    if not GOOGLE_CREDENTIALS_JSON or not SHEET_ID:
+        await message.answer("❌ Не настроены переменные GOOGLE_CREDENTIALS или SHEET_ID")
+        return
+    
+    await message.answer("🔄 Начинаю импорт мастеров из Google Таблицы...")
+    
+    try:
+        # Подключаемся к Google Sheets
+        creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        
+        # Открываем таблицу
+        sheet = client.open_by_key(SHEET_ID).sheet1
+        rows = sheet.get_all_records()
+        
+        added = 0
+        errors = 0
+        
+        for row in rows:
+            try:
+                # Проверяем обязательные поля
+                if not row.get('name') or not row.get('address'):
+                    continue
+                
+                # Подготавливаем данные для API
+                master_data = {
+                    "name": row['name'],
+                    "address": row['address'],
+                    "lat": float(row.get('lat', 55.751244)),
+                    "lon": float(row.get('lon', 37.618423)),
+                    "phone": row.get('phone', ''),
+                    "instagram": row.get('instagram', ''),
+                    "description": row.get('description', ''),
+                    "services": row.get('services', '')
+                }
+                
+                # Отправляем в API
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(f"{API_URL}/masters", json=master_data) as resp:
+                        if resp.status == 200:
+                            added += 1
+                            logger.info(f"✅ Добавлен мастер: {row['name']}")
+                        else:
+                            errors += 1
+                            logger.error(f"❌ Ошибка добавления {row['name']}: {resp.status}")
+            except Exception as e:
+                errors += 1
+                logger.error(f"Ошибка в строке: {e}")
+        
+        await message.answer(
+            f"✅ *Импорт завершён!*\n\n"
+            f"➕ Добавлено: `{added}`\n"
+            f"❌ Ошибок: `{errors}`",
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка импорта: {e}")
+        await message.answer(f"❌ Ошибка при импорте: {e}")
 
 
 async def main():
