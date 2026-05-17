@@ -18,8 +18,8 @@ API_URL = os.getenv("API_URL", "https://intuitive-fascination-production-ce82.up
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ЗАМЕНИ НА СВОЙ TELEGRAM ID
-ADMIN_IDS = [123456789]  # ← СЮДА ВСТАВЬ СВОЙ ID
+# Замени на свой Telegram ID
+ADMIN_IDS = [123456789]
 
 # Переменные для Google Sheets
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
@@ -37,8 +37,6 @@ async def api_request(method: str, endpoint: str, data=None):
 @dp.message(CommandStart())
 async def start(message: types.Message):
     user_id = message.from_user.id
-    
-    # Если пользователь — админ, показываем админ-панель
     if user_id in ADMIN_IDS:
         await message.answer(
             "👑 *Beauty Bot Admin Panel*\n\n"
@@ -50,20 +48,17 @@ async def start(message: types.Message):
             "📥 /import_sheet — импорт мастеров из Google Таблицы",
             parse_mode="Markdown"
         )
-        return
-    
-    # Если обычный пользователь — клиентское меню
-    # Здесь можно добавить кнопку с картой, запись и т.д.
-    await message.answer(
-        "💅 *Добро пожаловать в Beauty Map!*\n\n"
-        "Нажми кнопку ниже, чтобы найти мастера рядом с тобой.\n\n"
-        "✂️ *Хотите стать мастером?* Нажмите кнопку «Стать мастером» и напишите мне в личные сообщения.",
-        parse_mode="Markdown",
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="🗺️ Открыть карту мастеров", web_app=types.WebAppInfo(url="https://project-ev8r3.vercel.app"))],
-            [types.InlineKeyboardButton(text="📝 Стать мастером", url="https://t.me/pinkspotvelur")]
-        ])
-    )
+    else:
+        await message.answer(
+            "💅 *Добро пожаловать в Beauty Map!*\n\n"
+            "Нажми кнопку ниже, чтобы найти мастера рядом с тобой.\n\n"
+            "✂️ *Хотите стать мастером?* Нажмите кнопку «Стать мастером» и напишите мне в личные сообщения.",
+            parse_mode="Markdown",
+            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="🗺️ Открыть карту мастеров", web_app=types.WebAppInfo(url="https://project-ev8r3.vercel.app"))],
+                [types.InlineKeyboardButton(text="📝 Стать мастером", url="https://t.me/pinkspotvelur")]
+            ])
+        )
 
 
 @dp.message(Command("pending"))
@@ -123,13 +118,13 @@ async def add_promo(message: types.Message):
     if len(parts) < 4:
         await message.answer("❌ Формат: `/add_promo КОД СКИДКА% ДНЕЙ`\nПример: `/add_promo SUMMER20 20 30`", parse_mode="Markdown")
         return
-    
+
     code = parts[1].upper()
     discount = int(parts[2])
     days = int(parts[3])
-    
+
     valid_until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-    
+
     async with aiohttp.ClientSession() as s:
         async with s.post(f"{API_URL}/add-promo", json={"code": code, "discount_percent": discount, "valid_until": valid_until, "max_uses": 100}) as r:
             if r.status == 200:
@@ -138,36 +133,35 @@ async def add_promo(message: types.Message):
                 await message.answer("❌ Ошибка при создании промокода")
 
 
-# === ИМПОРТ ИЗ GOOGLE ТАБЛИЦ ===
 @dp.message(Command("import_sheet"))
 async def import_from_google_sheets(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         await message.answer("⛔ Нет прав")
         return
-    
+
     if not GOOGLE_CREDENTIALS_JSON or not SHEET_ID:
         await message.answer("❌ Не настроены переменные GOOGLE_CREDENTIALS или SHEET_ID")
         return
-    
+
     await message.answer("🔄 Начинаю импорт мастеров из Google Таблицы...")
-    
+
     try:
         creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
-        
+
         sheet = client.open_by_key(SHEET_ID).sheet1
         rows = sheet.get_all_records()
-        
+
         added = 0
         errors = 0
-        
+
         for row in rows:
             try:
                 if not row.get('name') or not row.get('address'):
                     continue
-                
+
                 master_data = {
                     "name": row['name'],
                     "address": row['address'],
@@ -178,7 +172,7 @@ async def import_from_google_sheets(message: types.Message):
                     "description": row.get('description', ''),
                     "services": row.get('services', '')
                 }
-                
+
                 async with aiohttp.ClientSession() as session:
                     async with session.post(f"{API_URL}/masters", json=master_data) as resp:
                         if resp.status == 200:
@@ -190,14 +184,14 @@ async def import_from_google_sheets(message: types.Message):
             except Exception as e:
                 errors += 1
                 logger.error(f"Ошибка в строке: {e}")
-        
+
         await message.answer(
             f"✅ *Импорт завершён!*\n\n"
             f"➕ Добавлено: `{added}`\n"
             f"❌ Ошибок: `{errors}`",
             parse_mode="Markdown"
         )
-        
+
     except Exception as e:
         logger.error(f"Ошибка импорта: {e}")
         await message.answer(f"❌ Ошибка при импорте: {e}")
