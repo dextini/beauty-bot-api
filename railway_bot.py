@@ -18,7 +18,8 @@ API_URL = os.getenv("API_URL", "https://intuitive-fascination-production-ce82.up
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-ADMIN_IDS = [123456789]  # ЗАМЕНИ НА СВОЙ ID
+# ЗАМЕНИ НА СВОЙ TELEGRAM ID
+ADMIN_IDS = [123456789]  # ← СЮДА ВСТАВЬ СВОЙ ID
 
 # Переменные для Google Sheets
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
@@ -35,15 +36,33 @@ async def api_request(method: str, endpoint: str, data=None):
 
 @dp.message(CommandStart())
 async def start(message: types.Message):
+    user_id = message.from_user.id
+    
+    # Если пользователь — админ, показываем админ-панель
+    if user_id in ADMIN_IDS:
+        await message.answer(
+            "👑 *Beauty Bot Admin Panel*\n\n"
+            "📋 /pending — заявки мастеров\n"
+            "✅ /approve ID — одобрить\n"
+            "❌ /reject ID — отклонить\n"
+            "📊 /stats — общая статистика\n"
+            "🎫 /add_promo КОД % ДНИ — создать промокод\n"
+            "📥 /import_sheet — импорт мастеров из Google Таблицы",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Если обычный пользователь — клиентское меню
+    # Здесь можно добавить кнопку с картой, запись и т.д.
     await message.answer(
-        "👑 *Beauty Bot Admin Panel*\n\n"
-        "📋 /pending — заявки мастеров\n"
-        "✅ /approve ID — одобрить\n"
-        "❌ /reject ID — отклонить\n"
-        "📊 /stats — общая статистика\n"
-        "🎫 /add_promo КОД % ДНИ — создать промокод\n"
-        "📥 /import_sheet — импорт мастеров из Google Таблицы",
-        parse_mode="Markdown"
+        "💅 *Добро пожаловать в Beauty Map!*\n\n"
+        "Нажми кнопку ниже, чтобы найти мастера рядом с тобой.\n\n"
+        "✂️ *Хотите стать мастером?* Нажмите кнопку «Стать мастером» и напишите мне в личные сообщения.",
+        parse_mode="Markdown",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="🗺️ Открыть карту мастеров", web_app=types.WebAppInfo(url="https://project-ev8r3.vercel.app"))],
+            [types.InlineKeyboardButton(text="📝 Стать мастером", url="https://t.me/pinkspotvelur")]
+        ])
     )
 
 
@@ -133,13 +152,11 @@ async def import_from_google_sheets(message: types.Message):
     await message.answer("🔄 Начинаю импорт мастеров из Google Таблицы...")
     
     try:
-        # Подключаемся к Google Sheets
         creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         
-        # Открываем таблицу
         sheet = client.open_by_key(SHEET_ID).sheet1
         rows = sheet.get_all_records()
         
@@ -148,11 +165,9 @@ async def import_from_google_sheets(message: types.Message):
         
         for row in rows:
             try:
-                # Проверяем обязательные поля
                 if not row.get('name') or not row.get('address'):
                     continue
                 
-                # Подготавливаем данные для API
                 master_data = {
                     "name": row['name'],
                     "address": row['address'],
@@ -164,7 +179,6 @@ async def import_from_google_sheets(message: types.Message):
                     "services": row.get('services', '')
                 }
                 
-                # Отправляем в API
                 async with aiohttp.ClientSession() as session:
                     async with session.post(f"{API_URL}/masters", json=master_data) as resp:
                         if resp.status == 200:
