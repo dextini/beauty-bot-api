@@ -45,7 +45,8 @@ async def start(message: types.Message):
             "❌ /reject ID — отклонить\n"
             "📊 /stats — общая статистика\n"
             "🎫 /add_promo КОД % ДНИ — создать промокод\n"
-            "📥 /import_sheet — импорт мастеров из Google Таблицы",
+            "📥 /import_sheet — импорт мастеров из Google Таблицы\n"
+            "🗑️ /delete_master ID — удалить мастера с карты",
             parse_mode="Markdown"
         )
     else:
@@ -107,6 +108,24 @@ async def reject(message: types.Message):
         await message.answer("❌ Формат: `/reject TELEGRAM_ID`", parse_mode="Markdown")
         return
     await message.answer(f"❌ Мастер `{parts[1]}` отклонён", parse_mode="Markdown")
+
+
+@dp.message(Command("delete_master"))
+async def delete_master(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Формат: `/delete_master ID`", parse_mode="Markdown")
+        return
+    master_id = parts[1]
+    async with aiohttp.ClientSession() as session:
+        async with session.delete(f"{API_URL}/masters/{master_id}") as resp:
+            if resp.status == 200:
+                await message.answer(f"✅ Мастер с ID `{master_id}` удалён", parse_mode="Markdown")
+            else:
+                await message.answer(f"❌ Ошибка при удалении мастера {master_id}")
 
 
 @dp.message(Command("add_promo"))
