@@ -46,7 +46,8 @@ async def start(message: types.Message):
             "📊 /stats — общая статистика\n"
             "🎫 /add_promo КОД % ДНИ — создать промокод\n"
             "📥 /import_sheet — импорт мастеров из Google Таблицы\n"
-            "🗑️ /delete_master ID — удалить мастера с карты",
+            "🗑️ /delete_master ID — удалить мастера с карты\n"
+            "🤖 /set_master_bot ID ТОКЕН — привязать бота мастеру",
             parse_mode="Markdown"
         )
     else:
@@ -126,6 +127,27 @@ async def delete_master(message: types.Message):
                 await message.answer(f"✅ Мастер с ID `{master_id}` удалён", parse_mode="Markdown")
             else:
                 await message.answer(f"❌ Ошибка при удалении мастера {master_id}")
+
+
+@dp.message(Command("set_master_bot"))
+async def set_master_bot(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        await message.answer("❌ Формат: `/set_master_bot ID_МАСТЕРА ТОКЕН`\n\nПример:\n`/set_master_bot 1 1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw`", parse_mode="Markdown")
+        return
+    
+    master_id = parts[1]
+    bot_token = parts[2]
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.patch(f"{API_URL}/masters/{master_id}/bot-token?bot_token={bot_token}") as resp:
+            if resp.status == 200:
+                await message.answer(f"✅ Токен для мастера ID `{master_id}` сохранён.\nТеперь уведомления о новых записях будут приходить в его бота.", parse_mode="Markdown")
+            else:
+                await message.answer(f"❌ Ошибка при сохранении токена. Проверь, что мастер с ID `{master_id}` существует.", parse_mode="Markdown")
 
 
 @dp.message(Command("add_promo"))
