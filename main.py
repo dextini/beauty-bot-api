@@ -112,11 +112,12 @@ def init_db():
         except:
             pass
 
-    # Добавляем колонку bot_token (для привязки ботов)
+    # Добавляем колонку bot_token (для привязки ботов) - ПРИНУДИТЕЛЬНО
     try:
         c.execute("ALTER TABLE masters ADD COLUMN bot_token TEXT")
+        print("✅ Колонка bot_token добавлена")
     except:
-        pass
+        print("⚠️ Колонка bot_token уже есть")
 
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
@@ -168,13 +169,19 @@ def generate_slots(work_start: str, work_end: str, interval: int = 30) -> List[s
     return slots
 
 
-async def notify_master_with_buttons(master_telegram_id: str, message: str, booking_id: int):
-    if not master_telegram_id or MASTER_BOT_TOKEN == "YOUR_MASTER_BOT_TOKEN":
+# === НОВАЯ ФУНКЦИЯ ОТПРАВКИ УВЕДОМЛЕНИЙ (В БОТА МАСТЕРА) ===
+async def notify_master_with_buttons_v2(master_bot_token: str, master_telegram_id: str, message: str, booking_id: int):
+    """
+    Отправляет уведомление в ЛИЧНОГО бота мастера (по токену).
+    Если мастер не привязал бота, уведомление не отправляется.
+    """
+    if not master_bot_token or not master_telegram_id:
+        print(f"❌ У мастера {master_telegram_id} нет bot_token, уведомление не отправлено")
         return
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
-                f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
+                f"https://api.telegram.org/bot{master_bot_token}/sendMessage",
                 json={
                     "chat_id": master_telegram_id,
                     "text": message,
@@ -189,18 +196,6 @@ async def notify_master_with_buttons(master_telegram_id: str, message: str, book
             )
     except Exception as e:
         print(f"Notify error: {e}")
-
-async def send_message(telegram_id: str, message: str):
-    if not telegram_id or MASTER_BOT_TOKEN == "YOUR_MASTER_BOT_TOKEN":
-        return
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
-                json={"chat_id": telegram_id, "text": message, "parse_mode": "Markdown"}
-            )
-    except Exception as e:
-        print(f"Send message error: {e}")
 
 
 # --- Schemas ---
@@ -387,10 +382,9 @@ def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connectio
     return {"status": "ok", "message": "Bot token saved"}
 
 
-# === ИСПРАВЛЕННАЯ ФУНКЦИЯ CREATE BOOKING (SQLite в одном потоке) ===
+# === ИСПРАВЛЕННАЯ ФУНКЦИЯ CREATE BOOKING (с новыми уведомлениями) ===
 @app.post("/bookings", response_model=BookingOut)
 async def create_booking(data: BookingIn):
-    # СОЗДАЁМ НОВОЕ СОЕДИНЕНИЕ В ЭТОМ ПОТОКЕ
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
 
@@ -421,8 +415,10 @@ async def create_booking(data: BookingIn):
         conn.commit()
         booking_id = cursor.lastrowid
 
-        # Уведомление мастеру
+        # === НОВАЯ ЛОГИКА УВЕДОМЛЕНИЙ ===
         master_tg = master["telegram_id"]
+        master_bot_token = master["bot_token"]  # Токен ЛИЧНОГО бота мастера
+        
         phone_line = f"\n📞 Телефон: {data.client_phone}" if data.client_phone else ""
         message = (
             f"🌸 *Новая запись!*\n\n"
@@ -432,7 +428,9 @@ async def create_booking(data: BookingIn):
             f"📅 Дата: {data.date}\n"
             f"🕐 Время: {data.time}"
         )
-        await notify_master_with_buttons(master_tg, message, booking_id)
+        
+        # Отправляем в ЛИЧНОГО бота мастера, если есть bot_token
+        await notify_master_with_buttons_v2(master_bot_token, master_tg, message, booking_id)
 
         booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
         return dict(booking)
