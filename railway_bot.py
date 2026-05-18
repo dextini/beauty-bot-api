@@ -47,7 +47,10 @@ async def start(message: types.Message):
             "🎫 /add_promo КОД % ДНИ — создать промокод\n"
             "📥 /import_sheet — импорт мастеров из Google Таблицы\n"
             "🗑️ /delete_master ID — удалить мастера с карты\n"
-            "🤖 /set_master_bot ID ТОКЕН — привязать бота мастеру",
+            "🤖 /set_master_bot ID ТОКЕН — привязать бота мастеру\n"
+            "📸 /add_photo ID ССЫЛКА — добавить фото мастеру\n"
+            "📋 /list_photos ID — список фото мастера\n"
+            "🗑️ /del_photo ID ИНДЕКС — удалить фото",
             parse_mode="Markdown"
         )
     else:
@@ -148,6 +151,76 @@ async def set_master_bot(message: types.Message):
                 await message.answer(f"✅ Токен для мастера ID `{master_id}` сохранён.\nТеперь уведомления о новых записях будут приходить в его бота.", parse_mode="Markdown")
             else:
                 await message.answer(f"❌ Ошибка при сохранении токена. Проверь, что мастер с ID `{master_id}` существует.", parse_mode="Markdown")
+
+
+@dp.message(Command("add_photo"))
+async def add_master_photo(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        await message.answer("❌ Формат: `/add_photo ID_МАСТЕРА ССЫЛКА_НА_ФОТО`\n\nПример:\n`/add_photo 1 https://example.com/photo.jpg`", parse_mode="Markdown")
+        return
+    
+    master_id = parts[1]
+    photo_url = parts[2]
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{API_URL}/masters/{master_id}/photos", json={"photo": photo_url}) as resp:
+            if resp.status == 200:
+                await message.answer(f"✅ Фото добавлено мастеру ID {master_id}")
+            else:
+                await message.answer("❌ Ошибка при добавлении фото")
+
+
+@dp.message(Command("list_photos"))
+async def list_master_photos(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("❌ Формат: `/list_photos ID_МАСТЕРА`", parse_mode="Markdown")
+        return
+    
+    master_id = parts[1]
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{API_URL}/masters/{master_id}/photos") as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                photos = data.get("photos", [])
+                if not photos:
+                    await message.answer(f"📭 У мастера ID {master_id} нет фото")
+                else:
+                    text = f"📸 *Фото мастера ID {master_id}:*\n\n"
+                    for i, photo in enumerate(photos):
+                        text += f"{i}. {photo}\n"
+                    await message.answer(text, parse_mode="Markdown")
+            else:
+                await message.answer("❌ Ошибка при получении списка фото")
+
+
+@dp.message(Command("del_photo"))
+async def delete_master_photo(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        await message.answer("❌ Формат: `/del_photo ID_МАСТЕРА ИНДЕКС_ФОТО`\n\nПример:\n`/del_photo 1 0` (удалит первое фото)", parse_mode="Markdown")
+        return
+    
+    master_id = parts[1]
+    photo_index = int(parts[2])
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.delete(f"{API_URL}/masters/{master_id}/photos?index={photo_index}") as resp:
+            if resp.status == 200:
+                await message.answer(f"✅ Фото удалено у мастера ID {master_id}")
+            else:
+                await message.answer("❌ Ошибка при удалении фото")
 
 
 @dp.message(Command("add_promo"))
