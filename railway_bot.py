@@ -19,7 +19,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # Замени на свой Telegram ID
-ADMIN_IDS = [123456789]
+ADMIN_IDS = [868528632]
 
 # Переменные для Google Sheets
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
