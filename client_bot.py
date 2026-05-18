@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 API_URL = os.getenv("API_URL", "https://intuitive-fascination-production-ce82.up.railway.app")
-CHANNEL_USERNAME = "@beauty_news"  # ЗАМЕНИ НА СВОЙ КАНАЛ
+CHANNEL_USERNAME = "@pinkspotnews"  # ЗАМЕНИ НА СВОЙ КАНАЛ
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
