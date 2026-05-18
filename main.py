@@ -112,6 +112,13 @@ def init_db():
         except:
             pass
 
+    # Принудительное добавление колонки bot_token
+    try:
+        c.execute("ALTER TABLE masters ADD COLUMN bot_token TEXT")
+        print("✅ Колонка bot_token добавлена")
+    except:
+        print("⚠️ Колонка bot_token уже есть")
+
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
         masters_data = [
@@ -210,6 +217,7 @@ class MasterOut(BaseModel):
     phone: Optional[str]
     instagram: Optional[str]
     services: List[ServiceOut] = []
+    bot_token: Optional[str] = None  # <--- ДОБАВЛЕНО ПОЛЕ ДЛЯ ТОКЕНА
 
 class BookingIn(BaseModel):
     master_id: int
