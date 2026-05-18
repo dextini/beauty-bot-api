@@ -255,10 +255,9 @@ def get_masters(conn: sqlite3.Connection = Depends(get_db)):
     return result
 
 
-# === ЭНДПОИНТ ДЛЯ ДОБАВЛЕНИЯ МАСТЕРА (ИМПОРТ ИЗ ТАБЛИЦ) ===
+# === ЭНДПОИНТ ДЛЯ ДОБАВЛЕНИЯ МАСТЕРА ===
 @app.post("/masters")
 def add_master(master: dict, conn: sqlite3.Connection = Depends(get_db)):
-    # Проверяем обязательные поля
     if not master.get("name") or not master.get("address"):
         raise HTTPException(status_code=400, detail="Missing name or address")
     
@@ -271,6 +270,18 @@ def add_master(master: dict, conn: sqlite3.Connection = Depends(get_db)):
     )
     conn.commit()
     return {"status": "ok", "message": "Master added"}
+
+
+# === ЭНДПОИНТ ДЛЯ УДАЛЕНИЯ МАСТЕРА ===
+@app.delete("/masters/{master_id}")
+def delete_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+    if not master:
+        raise HTTPException(status_code=404, detail="Master not found")
+    
+    conn.execute("DELETE FROM masters WHERE id = ?", (master_id,))
+    conn.commit()
+    return {"status": "ok", "message": f"Master {master_id} deleted"}
 
 
 @app.get("/masters/by_telegram/{telegram_id}")
