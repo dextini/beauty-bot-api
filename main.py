@@ -254,17 +254,24 @@ def get_masters(conn: sqlite3.Connection = Depends(get_db)):
         result.append(master_dict)
     return result
 
-# === НОВЫЙ ЭНДПОИНТ ДЛЯ ДОБАВЛЕНИЯ МАСТЕРА (ИМПОРТ ИЗ ТАБЛИЦ) ===
+
+# === ЭНДПОИНТ ДЛЯ ДОБАВЛЕНИЯ МАСТЕРА (ИМПОРТ ИЗ ТАБЛИЦ) ===
 @app.post("/masters")
 def add_master(master: dict, conn: sqlite3.Connection = Depends(get_db)):
+    # Проверяем обязательные поля
+    if not master.get("name") or not master.get("address"):
+        raise HTTPException(status_code=400, detail="Missing name or address")
+    
     conn.execute(
         """INSERT INTO masters (name, address, lat, lon, phone, instagram, description) 
            VALUES (?,?,?,?,?,?,?)""",
-        (master["name"], master["address"], master["lat"], master["lon"],
+        (master["name"], master["address"], 
+         master.get("lat", 55.751244), master.get("lon", 37.618423),
          master.get("phone"), master.get("instagram"), master.get("description"))
     )
     conn.commit()
     return {"status": "ok", "message": "Master added"}
+
 
 @app.get("/masters/by_telegram/{telegram_id}")
 def get_master_by_telegram(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
@@ -272,6 +279,7 @@ def get_master_by_telegram(telegram_id: str, conn: sqlite3.Connection = Depends(
     if not master:
         raise HTTPException(status_code=404, detail="Master not found")
     return dict(master)
+
 
 @app.get("/masters/{master_id}", response_model=MasterOut)
 def get_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
@@ -282,6 +290,7 @@ def get_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     master_dict = dict(m)
     master_dict["services"] = [dict(s) for s in services]
     return master_dict
+
 
 @app.get("/masters/{master_id}/slots")
 def get_free_slots(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
@@ -313,6 +322,7 @@ def get_free_slots(master_id: int, date: str, conn: sqlite3.Connection = Depends
 
     return {"date": date, "slots": free_slots, "day_off": False}
 
+
 @app.get("/masters/{master_id}/schedule")
 def get_schedule(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
@@ -333,11 +343,13 @@ def get_schedule(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
         result.append({"date": day, "day_off": bool(day_off), "bookings": [dict(b) for b in bookings]})
     return result
 
+
 @app.post("/masters/{master_id}/days_off")
 def add_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
     conn.execute("INSERT OR IGNORE INTO days_off (master_id, date) VALUES (?,?)", (master_id, date))
     conn.commit()
     return {"status": "ok", "date": date}
+
 
 @app.delete("/masters/{master_id}/days_off/{date}")
 def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
@@ -345,11 +357,13 @@ def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends
     conn.commit()
     return {"status": "ok", "date": date}
 
+
 @app.patch("/masters/{master_id}/telegram")
 def set_master_telegram(master_id: int, telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     conn.execute("UPDATE masters SET telegram_id=? WHERE id=?", (telegram_id, master_id))
     conn.commit()
     return {"status": "ok"}
+
 
 @app.patch("/masters/{master_id}/bot-token")
 def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connection = Depends(get_db)):
@@ -360,6 +374,7 @@ def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connectio
     conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (bot_token, master_id))
     conn.commit()
     return {"status": "ok", "message": "Bot token saved"}
+
 
 @app.post("/bookings", response_model=BookingOut)
 async def create_booking(data: BookingIn, conn: sqlite3.Connection = Depends(get_db)):
@@ -401,6 +416,7 @@ async def create_booking(data: BookingIn, conn: sqlite3.Connection = Depends(get
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
     return dict(booking)
 
+
 @app.patch("/bookings/{booking_id}/status")
 async def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
     booking = conn.execute(
@@ -414,6 +430,7 @@ async def update_booking_status(booking_id: int, status: str, conn: sqlite3.Conn
     conn.commit()
     return {"status": "ok", "booking_id": booking_id, "new_status": status}
 
+
 @app.get("/bookings/master/{master_id}")
 def get_master_bookings(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     bookings = conn.execute(
@@ -424,6 +441,7 @@ def get_master_bookings(master_id: int, conn: sqlite3.Connection = Depends(get_d
     ).fetchall()
     return [dict(b) for b in bookings]
 
+
 @app.get("/bookings/client/{telegram_id}")
 def get_client_bookings(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     bookings = conn.execute(
@@ -433,6 +451,7 @@ def get_client_bookings(telegram_id: str, conn: sqlite3.Connection = Depends(get
         (telegram_id,)
     ).fetchall()
     return [dict(b) for b in bookings]
+
 
 @app.get("/")
 def root():
