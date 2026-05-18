@@ -2,29 +2,51 @@ import asyncio
 import logging
 import os
 import aiohttp
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import WebAppInfo, InlineKeyboardButton, InlineKeyboardMarkup
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 API_URL = os.getenv("API_URL", "https://intuitive-fascination-production-ce82.up.railway.app")
-
-if not BOT_TOKEN:
-    logger.error("BOT_TOKEN not set!")
-    exit(1)
+CHANNEL_USERNAME = "@beauty_news"  # ЗАМЕНИ НА СВОЙ КАНАЛ
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ЗАМЕНИ НА СВОЙ TELEGRAM ID (узнай у @userinfobot)
-ADMIN_ID = 868528632  # ← СЮДА ВСТАВЬ СВОЙ ID
+
+async def check_subscription(user_id: int) -> bool:
+    """Проверяет, подписан ли пользователь на канал"""
+    try:
+        chat_member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
+        return chat_member.status in ["member", "administrator", "creator"]
+    except:
+        return False
 
 
 @dp.message(CommandStart())
 async def start(message: types.Message):
+    user_id = message.from_user.id
+    is_subscribed = await check_subscription(user_id)
+    
+    if not is_subscribed:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Подписаться на новости", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
+            [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_sub")]
+        ])
+        await message.answer(
+            "🌸 *Добро пожаловать в Beauty Map!*\n\n"
+            "Чтобы пользоваться картой мастеров и записываться,\n"
+            "**подпишись на наш канал с новостями и акциями.**\n\n"
+            "👇 Нажми на кнопку ниже, подпишись, а затем нажми «Проверить подписку».",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Если подписан — показываем карту
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🗺️ Открыть карту мастеров", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))],
         [InlineKeyboardButton(text="📝 Стать мастером", url="https://t.me/pinkspotvelur")]
@@ -33,30 +55,22 @@ async def start(message: types.Message):
         "💅 *Добро пожаловать в Beauty Map!*\n\n"
         "Нажми кнопку ниже, чтобы найти мастера рядом с тобой.\n\n"
         "✂️ *Хотите стать мастером?* Нажмите кнопку «Стать мастером» и напишите мне в личные сообщения.",
-        reply_markup=keyboard,
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=keyboard
     )
 
 
-@dp.message(Command("regbot"))
-async def register_master_bot(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Нет прав")
-        return
-    parts = message.text.split()
-    if len(parts) != 2:
-        await message.answer("❌ Формат: `/regbot ТОКЕН`\n\nПример: `/regbot 1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw`", parse_mode="Markdown")
-        return
+@dp.callback_query(F.data == "check_sub")
+async def check_subscription_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    is_subscribed = await check_subscription(user_id)
     
-    token = parts[1].strip()
-    
-    async with aiohttp.ClientSession() as session:
-        master_id = 1  # ВРЕМЕННО, потом заменишь на ID нужного мастера
-        async with session.patch(f"{API_URL}/masters/{master_id}/bot-token?bot_token={token}") as resp:
-            if resp.status == 200:
-                await message.answer(f"✅ Токен бота сохранён для мастера ID {master_id}.\nТеперь этот мастер будет получать уведомления о новых записях.")
-            else:
-                await message.answer("❌ Ошибка при сохранении токена. Проверь, что API работает.")
+    if is_subscribed:
+        await callback.message.delete()
+        await start(callback.message)
+        await callback.answer("✅ Спасибо за подписку! Теперь ты можешь пользоваться картой.")
+    else:
+        await callback.answer("❌ Ты ещё не подписан на канал. Подпишись и нажми снова.", show_alert=True)
 
 
 async def main():
