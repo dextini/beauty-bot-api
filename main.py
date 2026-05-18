@@ -387,45 +387,58 @@ def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connectio
     return {"status": "ok", "message": "Bot token saved"}
 
 
+# === ИСПРАВЛЕННАЯ ФУНКЦИЯ CREATE BOOKING (SQLite в одном потоке) ===
 @app.post("/bookings", response_model=BookingOut)
-async def create_booking(data: BookingIn, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT * FROM masters WHERE id = ?", (data.master_id,)).fetchone()
-    if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
-    service = conn.execute("SELECT * FROM services WHERE id=? AND master_id=?", (data.service_id, data.master_id)).fetchone()
-    if not service:
-        raise HTTPException(status_code=404, detail="Service not found")
-    day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (data.master_id, data.date)).fetchone()
-    if day_off:
-        raise HTTPException(status_code=409, detail="Master is off this day")
-    existing = conn.execute(
-        "SELECT id FROM bookings WHERE master_id=? AND date=? AND time=? AND status!='cancelled'",
-        (data.master_id, data.date, data.time)
-    ).fetchone()
-    if existing:
-        raise HTTPException(status_code=409, detail="This time slot is already booked")
+async def create_booking(data: BookingIn):
+    # СОЗДАЁМ НОВОЕ СОЕДИНЕНИЕ В ЭТОМ ПОТОКЕ
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
 
-    cursor = conn.execute(
-        "INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time) VALUES (?,?,?,?,?,?,?)",
-        (data.master_id, data.service_id, data.client_name, data.client_telegram_id, data.client_phone, data.date, data.time)
-    )
-    conn.commit()
-    booking_id = cursor.lastrowid
+    try:
+        master = conn.execute("SELECT * FROM masters WHERE id = ?", (data.master_id,)).fetchone()
+        if not master:
+            raise HTTPException(status_code=404, detail="Master not found")
 
-    master_tg = master["telegram_id"]
-    phone_line = f"\n📞 Телефон: {data.client_phone}" if data.client_phone else ""
-    message = (
-        f"🌸 *Новая запись!*\n\n"
-        f"👩 Клиент: {data.client_name}{phone_line}\n"
-        f"💅 Услуга: {service['name']}\n"
-        f"💰 Цена: {service['price']} ₽\n"
-        f"📅 Дата: {data.date}\n"
-        f"🕐 Время: {data.time}"
-    )
-    await notify_master_with_buttons(master_tg, message, booking_id)
+        service = conn.execute("SELECT * FROM services WHERE id=? AND master_id=?", (data.service_id, data.master_id)).fetchone()
+        if not service:
+            raise HTTPException(status_code=404, detail="Service not found")
 
-    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
-    return dict(booking)
+        day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (data.master_id, data.date)).fetchone()
+        if day_off:
+            raise HTTPException(status_code=409, detail="Master is off this day")
+
+        existing = conn.execute(
+            "SELECT id FROM bookings WHERE master_id=? AND date=? AND time=? AND status!='cancelled'",
+            (data.master_id, data.date, data.time)
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail="This time slot is already booked")
+
+        cursor = conn.execute(
+            "INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time) VALUES (?,?,?,?,?,?,?)",
+            (data.master_id, data.service_id, data.client_name, data.client_telegram_id, data.client_phone, data.date, data.time)
+        )
+        conn.commit()
+        booking_id = cursor.lastrowid
+
+        # Уведомление мастеру
+        master_tg = master["telegram_id"]
+        phone_line = f"\n📞 Телефон: {data.client_phone}" if data.client_phone else ""
+        message = (
+            f"🌸 *Новая запись!*\n\n"
+            f"👩 Клиент: {data.client_name}{phone_line}\n"
+            f"💅 Услуга: {service['name']}\n"
+            f"💰 Цена: {service['price']} ₽\n"
+            f"📅 Дата: {data.date}\n"
+            f"🕐 Время: {data.time}"
+        )
+        await notify_master_with_buttons(master_tg, message, booking_id)
+
+        booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+        return dict(booking)
+
+    finally:
+        conn.close()
 
 
 @app.patch("/bookings/{booking_id}/status")
