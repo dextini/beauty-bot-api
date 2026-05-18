@@ -112,13 +112,6 @@ def init_db():
         except:
             pass
 
-    # Добавляем колонку bot_token (для привязки ботов) - ПРИНУДИТЕЛЬНО
-    try:
-        c.execute("ALTER TABLE masters ADD COLUMN bot_token TEXT")
-        print("✅ Колонка bot_token добавлена")
-    except:
-        print("⚠️ Колонка bot_token уже есть")
-
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
         masters_data = [
@@ -377,9 +370,32 @@ def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connectio
     if not master:
         raise HTTPException(status_code=404, detail="Master not found")
     
+    # Добавляем колонку bot_token, если её нет (на всякий случай)
+    try:
+        conn.execute("ALTER TABLE masters ADD COLUMN bot_token TEXT")
+    except:
+        pass
+    
     conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (bot_token, master_id))
     conn.commit()
     return {"status": "ok", "message": "Bot token saved"}
+
+
+# === ЭНДПОИНТ ДЛЯ ПРИНУДИТЕЛЬНОГО ДОБАВЛЕНИЯ КОЛОНКИ bot_token ===
+@app.post("/admin/add-bot-token-column")
+def add_bot_token_column():
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("ALTER TABLE masters ADD COLUMN bot_token TEXT")
+        conn.commit()
+        return {"status": "ok", "message": "Column bot_token added successfully"}
+    except Exception as e:
+        error_msg = str(e)
+        if "duplicate column name" in error_msg:
+            return {"status": "ok", "message": "Column bot_token already exists"}
+        return {"status": "error", "message": error_msg}
+    finally:
+        conn.close()
 
 
 # === ИСПРАВЛЕННАЯ ФУНКЦИЯ CREATE BOOKING (с новыми уведомлениями) ===
