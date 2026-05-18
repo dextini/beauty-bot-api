@@ -105,12 +105,12 @@ def init_db():
         )
     """)
 
-    # Добавляем колонки для существующих БД
-    for col in ["telegram_id TEXT", "work_start TEXT DEFAULT '09:00'", "work_end TEXT DEFAULT '20:00'"]:
-        try:
-            c.execute(f"ALTER TABLE masters ADD COLUMN {col}")
-        except:
-            pass
+    # Принудительное добавление колонки telegram_id (если её нет)
+    try:
+        c.execute("ALTER TABLE masters ADD COLUMN telegram_id TEXT")
+        print("✅ Колонка telegram_id добавлена")
+    except:
+        print("⚠️ Колонка telegram_id уже есть")
 
     # Принудительное добавление колонки bot_token
     try:
@@ -176,7 +176,7 @@ async def notify_master_with_buttons_v2(master_bot_token: str, master_telegram_i
     Если мастер не привязал бота, уведомление не отправляется.
     """
     if not master_bot_token or not master_telegram_id:
-        print(f"❌ У мастера {master_telegram_id} нет bot_token, уведомление не отправлено")
+        print(f"❌ У мастера нет bot_token или telegram_id, уведомление не отправлено")
         return
     try:
         async with httpx.AsyncClient() as client:
@@ -217,7 +217,8 @@ class MasterOut(BaseModel):
     phone: Optional[str]
     instagram: Optional[str]
     services: List[ServiceOut] = []
-    bot_token: Optional[str] = None  # <--- ДОБАВЛЕНО ПОЛЕ ДЛЯ ТОКЕНА
+    bot_token: Optional[str] = None
+    telegram_id: Optional[str] = None  # <--- ДОБАВЛЕНО ПОЛЕ ДЛЯ TELEGRAM_ID
 
 class BookingIn(BaseModel):
     master_id: int
@@ -367,7 +368,11 @@ def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends
 
 @app.patch("/masters/{master_id}/telegram")
 def set_master_telegram(master_id: int, telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("UPDATE masters SET telegram_id=? WHERE id=?", (telegram_id, master_id))
+    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+    if not master:
+        raise HTTPException(status_code=404, detail="Master not found")
+    
+    conn.execute("UPDATE masters SET telegram_id = ? WHERE id = ?", (telegram_id, master_id))
     conn.commit()
     return {"status": "ok"}
 
@@ -378,29 +383,23 @@ def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connectio
     if not master:
         raise HTTPException(status_code=404, detail="Master not found")
     
-    # Добавляем колонку bot_token, если её нет (на всякий случай)
-    try:
-        conn.execute("ALTER TABLE masters ADD COLUMN bot_token TEXT")
-    except:
-        pass
-    
     conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (bot_token, master_id))
     conn.commit()
     return {"status": "ok", "message": "Bot token saved"}
 
 
-# === ЭНДПОИНТ ДЛЯ ПРИНУДИТЕЛЬНОГО ДОБАВЛЕНИЯ КОЛОНКИ bot_token ===
-@app.post("/admin/add-bot-token-column")
-def add_bot_token_column():
+# === ЭНДПОИНТ ДЛЯ ПРИНУДИТЕЛЬНОГО ДОБАВЛЕНИЯ КОЛОНКИ ===
+@app.post("/admin/add-telegram-id-column")
+def add_telegram_id_column():
     conn = sqlite3.connect(DB_PATH)
     try:
-        conn.execute("ALTER TABLE masters ADD COLUMN bot_token TEXT")
+        conn.execute("ALTER TABLE masters ADD COLUMN telegram_id TEXT")
         conn.commit()
-        return {"status": "ok", "message": "Column bot_token added successfully"}
+        return {"status": "ok", "message": "Column telegram_id added successfully"}
     except Exception as e:
         error_msg = str(e)
         if "duplicate column name" in error_msg:
-            return {"status": "ok", "message": "Column bot_token already exists"}
+            return {"status": "ok", "message": "Column telegram_id already exists"}
         return {"status": "error", "message": error_msg}
     finally:
         conn.close()
@@ -441,7 +440,7 @@ async def create_booking(data: BookingIn):
 
         # === НОВАЯ ЛОГИКА УВЕДОМЛЕНИЙ ===
         master_tg = master["telegram_id"]
-        master_bot_token = master["bot_token"]  # Токен ЛИЧНОГО бота мастера
+        master_bot_token = master["bot_token"]
         
         phone_line = f"\n📞 Телефон: {data.client_phone}" if data.client_phone else ""
         message = (
@@ -453,7 +452,6 @@ async def create_booking(data: BookingIn):
             f"🕐 Время: {data.time}"
         )
         
-        # Отправляем в ЛИЧНОГО бота мастера, если есть bot_token
         await notify_master_with_buttons_v2(master_bot_token, master_tg, message, booking_id)
 
         booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
