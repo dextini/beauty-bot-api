@@ -11,7 +11,7 @@ from fastapi import Request
 
 app = FastAPI(title="Beauty Bot API")
 
-# === ЕДИНСТВЕННОЕ ИСПРАВЛЕНИЕ: CORS НАСТРОЕН ПРАВИЛЬНО ===
+# === CORS НАСТРОЕН ПРАВИЛЬНО ===
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -111,6 +111,12 @@ def init_db():
             c.execute(f"ALTER TABLE masters ADD COLUMN {col}")
         except:
             pass
+
+    # Добавляем колонку bot_token (для привязки ботов)
+    try:
+        c.execute("ALTER TABLE masters ADD COLUMN bot_token TEXT")
+    except:
+        pass
 
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
@@ -248,6 +254,18 @@ def get_masters(conn: sqlite3.Connection = Depends(get_db)):
         result.append(master_dict)
     return result
 
+# === НОВЫЙ ЭНДПОИНТ ДЛЯ ДОБАВЛЕНИЯ МАСТЕРА (ИМПОРТ ИЗ ТАБЛИЦ) ===
+@app.post("/masters")
+def add_master(master: dict, conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute(
+        """INSERT INTO masters (name, address, lat, lon, phone, instagram, description) 
+           VALUES (?,?,?,?,?,?,?)""",
+        (master["name"], master["address"], master["lat"], master["lon"],
+         master.get("phone"), master.get("instagram"), master.get("description"))
+    )
+    conn.commit()
+    return {"status": "ok", "message": "Master added"}
+
 @app.get("/masters/by_telegram/{telegram_id}")
 def get_master_by_telegram(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT * FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
@@ -333,10 +351,8 @@ def set_master_telegram(master_id: int, telegram_id: str, conn: sqlite3.Connecti
     conn.commit()
     return {"status": "ok"}
 
-# === НОВЫЙ ЭНДПОИНТ ДЛЯ СОХРАНЕНИЯ ТОКЕНА БОТА МАСТЕРА ===
 @app.patch("/masters/{master_id}/bot-token")
 def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connection = Depends(get_db)):
-    # Проверяем, существует ли мастер
     master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
     if not master:
         raise HTTPException(status_code=404, detail="Master not found")
@@ -370,7 +386,6 @@ async def create_booking(data: BookingIn, conn: sqlite3.Connection = Depends(get
     conn.commit()
     booking_id = cursor.lastrowid
 
-    # Уведомляем мастера (если есть bot_token, уведомление пойдёт в его бота)
     master_tg = master["telegram_id"]
     phone_line = f"\n📞 Телефон: {data.client_phone}" if data.client_phone else ""
     message = (
