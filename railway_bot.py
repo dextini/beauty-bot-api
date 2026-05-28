@@ -48,9 +48,10 @@ async def start(message: types.Message):
             "📥 /import_sheet — импорт мастеров из Google Таблицы\n"
             "🗑️ /delete_master ID — удалить мастера с карты\n"
             "🤖 /set_master_bot ID ТОКЕН — привязать бота мастеру\n"
-            "📸 /add_photo ID ССЫЛКА — добавить фото мастеру\n"
-            "📋 /list_photos ID — список фото мастера\n"
-            "🗑️ /del_photo ID ИНДЕКС — удалить фото",
+            "📸 /add_photo ID ССЫЛКА — добавить фото в портфолио\n"
+            "📋 /list_photos ID — список фото\n"
+            "🗑️ /del_photo ID ИНДЕКС — удалить фото\n"
+            "👤 /set_avatar ID ССЫЛКА — установить аватар (личное фото мастера)",
             parse_mode="Markdown"
         )
     else:
@@ -151,6 +152,27 @@ async def set_master_bot(message: types.Message):
                 await message.answer(f"✅ Токен для мастера ID `{master_id}` сохранён.\nТеперь уведомления о новых записях будут приходить в его бота.", parse_mode="Markdown")
             else:
                 await message.answer(f"❌ Ошибка при сохранении токена. Проверь, что мастер с ID `{master_id}` существует.", parse_mode="Markdown")
+
+
+@dp.message(Command("set_avatar"))
+async def set_master_avatar(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        await message.answer("❌ Формат: `/set_avatar ID_МАСТЕРА ССЫЛКА_НА_ФОТО`\n\nПример:\n`/set_avatar 1 https://example.com/avatar.jpg`", parse_mode="Markdown")
+        return
+    
+    master_id = parts[1]
+    photo_url = parts[2]
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.patch(f"{API_URL}/masters/{master_id}/avatar?photo_url={photo_url}") as resp:
+            if resp.status == 200:
+                await message.answer(f"✅ Аватар для мастера ID {master_id} сохранён")
+            else:
+                await message.answer("❌ Ошибка при сохранении аватара")
 
 
 @dp.message(Command("add_photo"))
