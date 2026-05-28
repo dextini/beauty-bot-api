@@ -47,10 +47,6 @@ DEFAULT_WORK_START = "09:00"
 DEFAULT_WORK_END = "20:00"
 SLOT_INTERVAL = 30
 
-# Настройки ЮKassa (добавь в Railway Variables)
-YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
-YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
-
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -69,7 +65,8 @@ def init_db():
             instagram TEXT,
             telegram_id TEXT,
             work_start TEXT DEFAULT '09:00',
-            work_end TEXT DEFAULT '20:00'
+            work_end TEXT DEFAULT '20:00',
+            registered_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -129,7 +126,7 @@ def init_db():
     """)
 
     # Добавляем колонки для существующих БД
-    for col in ["telegram_id TEXT", "work_start TEXT DEFAULT '09:00'", "work_end TEXT DEFAULT '20:00'"]:
+    for col in ["telegram_id TEXT", "work_start TEXT DEFAULT '09:00'", "work_end TEXT DEFAULT '20:00'", "registered_at TEXT DEFAULT CURRENT_TIMESTAMP"]:
         try:
             c.execute(f"ALTER TABLE masters ADD COLUMN {col}")
         except:
@@ -264,6 +261,7 @@ class MasterOut(BaseModel):
     bot_token: Optional[str] = None
     telegram_id: Optional[str] = None
     photos: Optional[List[str]] = None
+    registered_at: Optional[str] = None
 
 class BookingIn(BaseModel):
     master_id: int
@@ -354,8 +352,8 @@ def add_master(master: dict, conn: sqlite3.Connection = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Missing name or address")
     
     conn.execute(
-        """INSERT INTO masters (name, address, lat, lon, phone, instagram, description) 
-           VALUES (?,?,?,?,?,?,?)""",
+        """INSERT INTO masters (name, address, lat, lon, phone, instagram, description, registered_at) 
+           VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP)""",
         (master["name"], master["address"], 
          master.get("lat", 55.751244), master.get("lon", 37.618423),
          master.get("phone"), master.get("instagram"), master.get("description"))
@@ -489,68 +487,112 @@ def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connectio
     return {"status": "ok", "message": "Bot token saved"}
 
 
-# === СОЗДАНИЕ ДЕПОЗИТНОГО ПЛАТЕЖА ===
-@app.post("/create-deposit-payment")
-async def create_deposit_payment(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+# === СОЗДАНИЕ ПЛАТЕЖА С УЧЁТОМ БЕСПЛАТНОГО ПЕРИОДА ===
+@app.post("/create-commission-payment")
+async def create_commission_payment(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     booking_id = data["booking_id"]
     
     booking = conn.execute("""
-        SELECT b.*, s.price 
+        SELECT b.*, s.price, m.registered_at, m.name as master_name, m.bot_token, m.telegram_id as master_telegram_id
         FROM bookings b 
-        JOIN services s ON b.service_id = s.id 
+        JOIN services s ON b.service_id = s.id
+        JOIN masters m ON b.master_id = m.id
         WHERE b.id = ?
     """, (booking_id,)).fetchone()
     
     if not booking:
         raise HTTPException(404, "Booking not found")
     
-    if booking["status"] != "pending":
-        raise HTTPException(400, f"Booking status is {booking['status']}, cannot create deposit")
+    # Проверяем, прошло ли 21 день с регистрации мастера
+    registered_at = datetime.strptime(booking["registered_at"], "%Y-%m-%d %H:%M:%S")
+    days_since = (datetime.now() - registered_at).days
     
+    # Если бесплатный период ещё не закончился
+    if days_since < 21:
+        # Обновляем статус записи на confirmed
+        conn.execute("UPDATE bookings SET status = 'confirmed' WHERE id = ?", (booking_id,))
+        conn.commit()
+        
+        # Создаём чат
+        token = secrets.token_urlsafe(16)
+        conn.execute("""
+            INSERT INTO chats (booking_id, master_id, client_telegram_id, master_telegram_id, token)
+            VALUES (?, ?, ?, ?, ?)
+        """, (booking_id, booking["master_id"], booking["client_telegram_id"], booking["master_telegram_id"], token))
+        conn.commit()
+        
+        chat_link = f"https://t.me/pinkspotvelur_bot?start=chat_{token}"
+        
+        # Уведомляем клиента
+        await send_message_to_client(
+            booking["client_telegram_id"],
+            f"✅ *Запись подтверждена!*\n\n"
+            f"💅 Услуга: {booking['service_name']}\n"
+            f"👩 Мастер: {booking['master_name']}\n"
+            f"📅 {booking['date']} в {booking['time']}\n\n"
+            f"💬 *Чат с мастером открыт!*\n"
+            f"[Написать мастеру]({chat_link})"
+        )
+        
+        # Уведомляем мастера
+        await notify_master_with_buttons_v2(
+            booking["bot_token"],
+            booking["master_telegram_id"],
+            f"✅ *Запись подтверждена (бесплатный период)!*\n\n"
+            f"Клиент: {booking['client_name']}\n"
+            f"Запись: {booking['date']} в {booking['time']}\n\n"
+            f"💬 *Чат с клиентом открыт:*\n"
+            f"[Написать клиенту]({chat_link})",
+            booking_id
+        )
+        
+        return {"free": True, "message": "Бесплатный период, оплата не требуется", "chat_link": chat_link}
+    
+    # Если бесплатный период закончился — создаём платёж на 10%
     amount = booking["price"]
-    deposit_amount = round(amount * 0.10, 2)
+    commission = round(amount * 0.10, 2)
     
-    # Обновляем статус на awaiting_payment
-    conn.execute("UPDATE bookings SET status = 'awaiting_payment', deposit_amount = ? WHERE id = ?", (deposit_amount, booking_id))
+    # Обновляем статус записи на awaiting_payment
+    conn.execute("UPDATE bookings SET status = 'awaiting_payment', deposit_amount = ? WHERE id = ?", (commission, booking_id))
     conn.commit()
     
-    # Возвращаем фиктивную ссылку (заглушка, пока нет ЮKassa)
-    payment_url = f"https://t.me/pinkspotvelur_bot?start=payment_{booking_id}"
+    # Временная заглушка (позже заменим на реальную ссылку ЮKassa)
+    payment_url = f"https://t.me/pinkspotvelur_bot?start=pay_{booking_id}_{commission}"
     
     return {
+        "free": False,
         "payment_url": payment_url,
-        "deposit_amount": deposit_amount,
+        "commission": commission,
         "booking_id": booking_id
     }
 
 
-# === ПОДТВЕРЖДЕНИЕ ОПЛАТЫ И СОЗДАНИЕ ЧАТА ===
-@app.post("/confirm-payment/{booking_id}")
-async def confirm_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+# === ПОДТВЕРЖДЕНИЕ ОПЛАТЫ КОМИССИИ ===
+@app.post("/confirm-commission-payment/{booking_id}")
+async def confirm_commission_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    booking = conn.execute("""
+        SELECT b.*, m.name as master_name, m.bot_token, m.telegram_id as master_telegram_id
+        FROM bookings b
+        JOIN masters m ON b.master_id = m.id
+        WHERE b.id = ?
+    """, (booking_id,)).fetchone()
+    
     if not booking:
         raise HTTPException(404, "Booking not found")
     
     if booking["status"] != "awaiting_payment":
         raise HTTPException(400, "Booking not awaiting payment")
     
-    # Обновляем статус
-    conn.execute("""
-        UPDATE bookings 
-        SET status = 'confirmed', payment_status = 'paid'
-        WHERE id = ?
-    """, (booking_id,))
+    # Подтверждаем запись
+    conn.execute("UPDATE bookings SET status = 'confirmed', payment_status = 'paid' WHERE id = ?", (booking_id,))
     conn.commit()
-    
-    # Получаем данные мастера
-    master = conn.execute("SELECT * FROM masters WHERE id = ?", (booking["master_id"],)).fetchone()
     
     # Создаём чат
     token = secrets.token_urlsafe(16)
     conn.execute("""
         INSERT INTO chats (booking_id, master_id, client_telegram_id, master_telegram_id, token)
         VALUES (?, ?, ?, ?, ?)
-    """, (booking_id, booking["master_id"], booking["client_telegram_id"], master["telegram_id"], token))
+    """, (booking_id, booking["master_id"], booking["client_telegram_id"], booking["master_telegram_id"], token))
     conn.commit()
     
     chat_link = f"https://t.me/pinkspotvelur_bot?start=chat_{token}"
@@ -558,24 +600,23 @@ async def confirm_payment(booking_id: int, conn: sqlite3.Connection = Depends(ge
     # Уведомляем клиента
     await send_message_to_client(
         booking["client_telegram_id"],
-        f"✅ *Запись подтверждена и оплачена!*\n\n"
+        f"✅ *Запись подтверждена!*\n\n"
         f"💅 Услуга: {booking['service_name']}\n"
-        f"👩 Мастер: {master['name']}\n"
-        f"📅 {booking['date']} в {booking['time']}\n"
-        f"💰 Оплачено: {booking['deposit_amount']} ₽ (депозит 10%)\n\n"
+        f"👩 Мастер: {booking['master_name']}\n"
+        f"📅 {booking['date']} в {booking['time']}\n\n"
+        f"💰 Оплачено: {booking['deposit_amount']} ₽ (комиссия 10%)\n\n"
         f"💬 *Чат с мастером открыт!*\n"
-        f"[Написать мастеру]({chat_link})\n\n"
-        f"Остаток {booking['price'] - booking['deposit_amount']} ₽ оплатите мастеру на месте."
+        f"[Написать мастеру]({chat_link})"
     )
     
     # Уведомляем мастера
     await notify_master_with_buttons_v2(
-        master["bot_token"],
-        master["telegram_id"],
-        f"✅ *Клиент оплатил депозит!*\n\n"
+        booking["bot_token"],
+        booking["master_telegram_id"],
+        f"✅ *Клиент оплатил комиссию 10%!*\n\n"
         f"Клиент: {booking['client_name']}\n"
         f"Запись: {booking['date']} в {booking['time']}\n"
-        f"💰 Депозит: {booking['deposit_amount']} ₽\n\n"
+        f"💰 Комиссия: {booking['deposit_amount']} ₽\n\n"
         f"💬 *Чат с клиентом открыт:*\n"
         f"[Написать клиенту]({chat_link})",
         booking_id
