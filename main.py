@@ -346,6 +346,17 @@ def get_master_photos(master_id: int, conn: sqlite3.Connection = Depends(get_db)
     return {"photos": photos}
 
 
+@app.patch("/masters/{master_id}/avatar")
+def set_master_avatar(master_id: int, photo_url: str, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+    if not master:
+        raise HTTPException(status_code=404, detail="Master not found")
+    
+    conn.execute("UPDATE masters SET photo_url = ? WHERE id = ?", (photo_url, master_id))
+    conn.commit()
+    return {"status": "ok", "message": "Avatar saved"}
+
+
 @app.post("/masters")
 def add_master(master: dict, conn: sqlite3.Connection = Depends(get_db)):
     if not master.get("name") or not master.get("address"):
@@ -526,29 +537,22 @@ async def create_commission_payment(data: dict, conn: sqlite3.Connection = Depen
         # Уведомляем клиента
         await send_message_to_client(
             booking["client_telegram_id"],
-            f"✅ *Запись подтверждена!*\n\n"
-            f"💅 Услуга: {booking['service_name']}\n"
-            f"👩 Мастер: {booking['master_name']}\n"
-            f"📅 {booking['date']} в {booking['time']}\n\n"
-            f"💬 *Чат с мастером открыт!*\n"
-            f"[Написать мастеру]({chat_link})"
+            f"✅ *Запись подтверждена! (бесплатный период)*\n\n"
+            f"💅 {booking['service_name']}\n👩 {booking['master_name']}\n📅 {booking['date']} в {booking['time']}\n\n"
+            f"💬 [Чат с мастером]({chat_link})"
         )
         
         # Уведомляем мастера
         await notify_master_with_buttons_v2(
             booking["bot_token"],
             booking["master_telegram_id"],
-            f"✅ *Запись подтверждена (бесплатный период)!*\n\n"
-            f"Клиент: {booking['client_name']}\n"
-            f"Запись: {booking['date']} в {booking['time']}\n\n"
-            f"💬 *Чат с клиентом открыт:*\n"
-            f"[Написать клиенту]({chat_link})",
+            f"✅ Запись подтверждена (бесплатно)\nКлиент: {booking['client_name']}\n{booking['date']} в {booking['time']}\n\n💬 [Чат с клиентом]({chat_link})",
             booking_id
         )
         
-        return {"free": True, "message": "Бесплатный период, оплата не требуется", "chat_link": chat_link}
+        return {"free": True, "chat_link": chat_link}
     
-    # Если бесплатный период закончился — создаём платёж на 10%
+    # Платный период — создаём платёж на 10%
     amount = booking["price"]
     commission = round(amount * 0.10, 2)
     
@@ -601,12 +605,9 @@ async def confirm_commission_payment(booking_id: int, conn: sqlite3.Connection =
     await send_message_to_client(
         booking["client_telegram_id"],
         f"✅ *Запись подтверждена!*\n\n"
-        f"💅 Услуга: {booking['service_name']}\n"
-        f"👩 Мастер: {booking['master_name']}\n"
-        f"📅 {booking['date']} в {booking['time']}\n\n"
+        f"💅 {booking['service_name']}\n👩 {booking['master_name']}\n📅 {booking['date']} в {booking['time']}\n"
         f"💰 Оплачено: {booking['deposit_amount']} ₽ (комиссия 10%)\n\n"
-        f"💬 *Чат с мастером открыт!*\n"
-        f"[Написать мастеру]({chat_link})"
+        f"💬 [Чат с мастером]({chat_link})"
     )
     
     # Уведомляем мастера
@@ -617,8 +618,7 @@ async def confirm_commission_payment(booking_id: int, conn: sqlite3.Connection =
         f"Клиент: {booking['client_name']}\n"
         f"Запись: {booking['date']} в {booking['time']}\n"
         f"💰 Комиссия: {booking['deposit_amount']} ₽\n\n"
-        f"💬 *Чат с клиентом открыт:*\n"
-        f"[Написать клиенту]({chat_link})",
+        f"💬 [Чат с клиентом]({chat_link})",
         booking_id
     )
     
