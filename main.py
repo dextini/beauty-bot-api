@@ -6,6 +6,7 @@ import sqlite3
 import os
 import httpx
 import json
+import secrets
 from datetime import datetime, timedelta
 from fastapi.responses import JSONResponse
 from fastapi import Request
@@ -45,6 +46,10 @@ MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURS
 DEFAULT_WORK_START = "09:00"
 DEFAULT_WORK_END = "20:00"
 SLOT_INTERVAL = 30
+
+# Настройки ЮKassa (добавь в Railway Variables)
+YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
+YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
 
 
 def init_db():
@@ -90,6 +95,9 @@ def init_db():
             date TEXT NOT NULL,
             time TEXT NOT NULL,
             status TEXT DEFAULT 'pending',
+            payment_status TEXT DEFAULT 'pending',
+            deposit_amount REAL DEFAULT 0,
+            reminder_sent INTEGER DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (master_id) REFERENCES masters(id),
             FOREIGN KEY (service_id) REFERENCES services(id)
@@ -106,6 +114,20 @@ def init_db():
         )
     """)
 
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS chats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            booking_id INTEGER UNIQUE,
+            master_id INTEGER,
+            client_telegram_id TEXT,
+            master_telegram_id TEXT,
+            token TEXT UNIQUE,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (booking_id) REFERENCES bookings(id),
+            FOREIGN KEY (master_id) REFERENCES masters(id)
+        )
+    """)
+
     # Добавляем колонки для существующих БД
     for col in ["telegram_id TEXT", "work_start TEXT DEFAULT '09:00'", "work_end TEXT DEFAULT '20:00'"]:
         try:
@@ -113,19 +135,25 @@ def init_db():
         except:
             pass
 
-    # Добавляем колонку bot_token
     try:
         c.execute("ALTER TABLE masters ADD COLUMN bot_token TEXT")
         print("✅ Колонка bot_token добавлена")
     except:
         print("⚠️ Колонка bot_token уже есть")
 
-    # Добавляем колонку photos (JSON массив)
     try:
         c.execute("ALTER TABLE masters ADD COLUMN photos TEXT")
         print("✅ Колонка photos добавлена")
     except:
         print("⚠️ Колонка photos уже есть")
+
+    try:
+        c.execute("ALTER TABLE bookings ADD COLUMN payment_status TEXT DEFAULT 'pending'")
+        c.execute("ALTER TABLE bookings ADD COLUMN deposit_amount REAL DEFAULT 0")
+        c.execute("ALTER TABLE bookings ADD COLUMN reminder_sent INTEGER DEFAULT 0")
+        print("✅ Колонки bookings обновлены")
+    except:
+        print("⚠️ Колонки bookings уже есть")
 
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
@@ -177,7 +205,19 @@ def generate_slots(work_start: str, work_end: str, interval: int = 30) -> List[s
     return slots
 
 
-# === ФУНКЦИЯ ОТПРАВКИ УВЕДОМЛЕНИЙ В БОТА МАСТЕРА ===
+async def send_message_to_client(telegram_id: str, message: str):
+    if not telegram_id or MASTER_BOT_TOKEN == "YOUR_MASTER_BOT_TOKEN":
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
+                json={"chat_id": telegram_id, "text": message, "parse_mode": "Markdown"}
+            )
+    except Exception as e:
+        print(f"Send message error: {e}")
+
+
 async def notify_master_with_buttons_v2(master_bot_token: str, master_telegram_id: str, message: str, booking_id: int):
     if not master_bot_token or not master_telegram_id:
         print(f"❌ У мастера нет bot_token или telegram_id, уведомление не отправлено")
@@ -252,7 +292,6 @@ def get_masters(conn: sqlite3.Connection = Depends(get_db)):
     for m in masters:
         services = conn.execute("SELECT * FROM services WHERE master_id = ?", (m["id"],)).fetchall()
         master_dict = dict(m)
-        # Преобразуем JSON строку photos в список
         if master_dict.get("photos"):
             try:
                 master_dict["photos"] = json.loads(master_dict["photos"])
@@ -265,7 +304,6 @@ def get_masters(conn: sqlite3.Connection = Depends(get_db)):
     return result
 
 
-# === ЭНДПОИНТЫ ДЛЯ УПРАВЛЕНИЯ ФОТО ===
 @app.post("/masters/{master_id}/photos")
 def add_master_photo(master_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
@@ -310,7 +348,6 @@ def get_master_photos(master_id: int, conn: sqlite3.Connection = Depends(get_db)
     return {"photos": photos}
 
 
-# === ЭНДПОИНТ ДЛЯ ДОБАВЛЕНИЯ МАСТЕРА ===
 @app.post("/masters")
 def add_master(master: dict, conn: sqlite3.Connection = Depends(get_db)):
     if not master.get("name") or not master.get("address"):
@@ -327,7 +364,6 @@ def add_master(master: dict, conn: sqlite3.Connection = Depends(get_db)):
     return {"status": "ok", "message": "Master added"}
 
 
-# === ЭНДПОИНТ ДЛЯ УДАЛЕНИЯ МАСТЕРА ===
 @app.delete("/masters/{master_id}")
 def delete_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
@@ -453,24 +489,151 @@ def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connectio
     return {"status": "ok", "message": "Bot token saved"}
 
 
-# === ЭНДПОИНТ ДЛЯ ПРИНУДИТЕЛЬНОГО ДОБАВЛЕНИЯ КОЛОНКИ ===
-@app.post("/admin/add-bot-token-column")
-def add_bot_token_column():
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute("ALTER TABLE masters ADD COLUMN bot_token TEXT")
-        conn.commit()
-        return {"status": "ok", "message": "Column bot_token added successfully"}
-    except Exception as e:
-        error_msg = str(e)
-        if "duplicate column name" in error_msg:
-            return {"status": "ok", "message": "Column bot_token already exists"}
-        return {"status": "error", "message": error_msg}
-    finally:
-        conn.close()
+# === СОЗДАНИЕ ДЕПОЗИТНОГО ПЛАТЕЖА ===
+@app.post("/create-deposit-payment")
+async def create_deposit_payment(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    booking_id = data["booking_id"]
+    
+    booking = conn.execute("""
+        SELECT b.*, s.price 
+        FROM bookings b 
+        JOIN services s ON b.service_id = s.id 
+        WHERE b.id = ?
+    """, (booking_id,)).fetchone()
+    
+    if not booking:
+        raise HTTPException(404, "Booking not found")
+    
+    if booking["status"] != "pending":
+        raise HTTPException(400, f"Booking status is {booking['status']}, cannot create deposit")
+    
+    amount = booking["price"]
+    deposit_amount = round(amount * 0.10, 2)
+    
+    # Обновляем статус на awaiting_payment
+    conn.execute("UPDATE bookings SET status = 'awaiting_payment', deposit_amount = ? WHERE id = ?", (deposit_amount, booking_id))
+    conn.commit()
+    
+    # Возвращаем фиктивную ссылку (заглушка, пока нет ЮKassa)
+    payment_url = f"https://t.me/pinkspotvelur_bot?start=payment_{booking_id}"
+    
+    return {
+        "payment_url": payment_url,
+        "deposit_amount": deposit_amount,
+        "booking_id": booking_id
+    }
 
 
-# === ИСПРАВЛЕННАЯ ФУНКЦИЯ CREATE BOOKING ===
+# === ПОДТВЕРЖДЕНИЕ ОПЛАТЫ И СОЗДАНИЕ ЧАТА ===
+@app.post("/confirm-payment/{booking_id}")
+async def confirm_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    if not booking:
+        raise HTTPException(404, "Booking not found")
+    
+    if booking["status"] != "awaiting_payment":
+        raise HTTPException(400, "Booking not awaiting payment")
+    
+    # Обновляем статус
+    conn.execute("""
+        UPDATE bookings 
+        SET status = 'confirmed', payment_status = 'paid'
+        WHERE id = ?
+    """, (booking_id,))
+    conn.commit()
+    
+    # Получаем данные мастера
+    master = conn.execute("SELECT * FROM masters WHERE id = ?", (booking["master_id"],)).fetchone()
+    
+    # Создаём чат
+    token = secrets.token_urlsafe(16)
+    conn.execute("""
+        INSERT INTO chats (booking_id, master_id, client_telegram_id, master_telegram_id, token)
+        VALUES (?, ?, ?, ?, ?)
+    """, (booking_id, booking["master_id"], booking["client_telegram_id"], master["telegram_id"], token))
+    conn.commit()
+    
+    chat_link = f"https://t.me/pinkspotvelur_bot?start=chat_{token}"
+    
+    # Уведомляем клиента
+    await send_message_to_client(
+        booking["client_telegram_id"],
+        f"✅ *Запись подтверждена и оплачена!*\n\n"
+        f"💅 Услуга: {booking['service_name']}\n"
+        f"👩 Мастер: {master['name']}\n"
+        f"📅 {booking['date']} в {booking['time']}\n"
+        f"💰 Оплачено: {booking['deposit_amount']} ₽ (депозит 10%)\n\n"
+        f"💬 *Чат с мастером открыт!*\n"
+        f"[Написать мастеру]({chat_link})\n\n"
+        f"Остаток {booking['price'] - booking['deposit_amount']} ₽ оплатите мастеру на месте."
+    )
+    
+    # Уведомляем мастера
+    await notify_master_with_buttons_v2(
+        master["bot_token"],
+        master["telegram_id"],
+        f"✅ *Клиент оплатил депозит!*\n\n"
+        f"Клиент: {booking['client_name']}\n"
+        f"Запись: {booking['date']} в {booking['time']}\n"
+        f"💰 Депозит: {booking['deposit_amount']} ₽\n\n"
+        f"💬 *Чат с клиентом открыт:*\n"
+        f"[Написать клиенту]({chat_link})",
+        booking_id
+    )
+    
+    return {"status": "ok", "chat_link": chat_link}
+
+
+# === ПОЛУЧЕНИЕ ЧАТА ПО ТОКЕНУ ===
+@app.get("/chat/{token}")
+def get_chat_by_token(token: str, conn: sqlite3.Connection = Depends(get_db)):
+    chat = conn.execute("SELECT * FROM chats WHERE token = ?", (token,)).fetchone()
+    if not chat:
+        raise HTTPException(404, "Chat not found")
+    
+    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (chat["booking_id"],)).fetchone()
+    
+    return {
+        "booking_id": chat["booking_id"],
+        "master_id": chat["master_id"],
+        "client_telegram_id": chat["client_telegram_id"],
+        "master_telegram_id": chat["master_telegram_id"],
+        "client_name": booking["client_name"]
+    }
+
+
+# === НАПОМИНАНИЯ ЗА 2 ЧАСА ===
+@app.get("/send-reminders")
+async def send_reminders(conn: sqlite3.Connection = Depends(get_db)):
+    now = datetime.now()
+    two_hours_later = now + timedelta(hours=2)
+    
+    bookings = conn.execute("""
+        SELECT b.*, m.name as master_name, m.bot_token, m.telegram_id as master_telegram_id, s.name as service_name
+        FROM bookings b
+        JOIN masters m ON b.master_id = m.id
+        JOIN services s ON b.service_id = s.id
+        WHERE b.date = ? AND b.time = ? AND b.status = 'confirmed' AND b.reminder_sent = 0
+    """, (two_hours_later.strftime("%Y-%m-%d"), two_hours_later.strftime("%H:%M"))).fetchall()
+    
+    sent = 0
+    for booking in bookings:
+        await send_message_to_client(
+            booking["client_telegram_id"],
+            f"⏰ *Напоминание!*\n\nЧерез 2 часа у вас запись к {booking['master_name']}\n"
+            f"💅 {booking['service_name']}\n"
+            f"📅 {booking['date']} в {booking['time']}\n\n"
+            f"Пожалуйста, не опаздывайте! ✨"
+        )
+        
+        conn.execute("UPDATE bookings SET reminder_sent = 1 WHERE id = ?", (booking["id"],))
+        sent += 1
+    
+    conn.commit()
+    return {"sent": sent}
+
+
+# === ОСТАЛЬНЫЕ ЭНДПОИНТЫ ===
 @app.post("/bookings", response_model=BookingOut)
 async def create_booking(data: BookingIn):
     conn = sqlite3.connect(DB_PATH)
@@ -503,7 +666,6 @@ async def create_booking(data: BookingIn):
         conn.commit()
         booking_id = cursor.lastrowid
 
-        # === УВЕДОМЛЕНИЯ ===
         master_tg = master["telegram_id"]
         master_bot_token = master["bot_token"]
         
