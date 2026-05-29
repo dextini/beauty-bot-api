@@ -11,15 +11,15 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 API_URL = os.getenv("API_URL", "https://intuitive-fascination-production-ce82.up.railway.app")
-CHANNEL_USERNAME = "@pinkspotnews"  # ТВОЙ КАНАЛ
+CHANNEL_USERNAME = "@pinkspotnews"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Хранилище активных чатов
-active_chats = {}
+# АДМИНЫ — укажи свой Telegram ID
+ADMIN_IDS = [868528632]  # ← ЗАМЕНИ НА СВОЙ ID
 
-
+# ========== ПРОВЕРКА ПОДПИСКИ ==========
 async def check_subscription(user_id: int) -> bool:
     try:
         chat_member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
@@ -28,6 +28,18 @@ async def check_subscription(user_id: int) -> bool:
         return False
 
 
+# ========== АДМИН-КНОПКИ ==========
+def admin_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить мастера", callback_data="admin_add_master")],
+        [InlineKeyboardButton(text="📋 Список мастеров", callback_data="admin_list_masters")],
+        [InlineKeyboardButton(text="🔗 Назначить Telegram ID", callback_data="admin_set_telegram")],
+        [InlineKeyboardButton(text="❌ Удалить мастера", callback_data="admin_delete_master")],
+        [InlineKeyboardButton(text="🗺️ Открыть карту", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))]
+    ])
+
+
+# ========== КОМАНДА /START ==========
 @dp.message(CommandStart())
 async def start(message: types.Message):
     user_id = message.from_user.id
@@ -36,17 +48,10 @@ async def start(message: types.Message):
     # Проверка, не является ли команда открытием чата
     if text.startswith("/start chat_"):
         token = text.replace("/start chat_", "")
-        
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{API_URL}/chat/{token}") as resp:
                 if resp.status == 200:
                     chat_data = await resp.json()
-                    active_chats[user_id] = {
-                        "type": "chat",
-                        "booking_id": chat_data["booking_id"],
-                        "other_party_id": chat_data["master_telegram_id"] if user_id == chat_data["client_telegram_id"] else chat_data["client_telegram_id"],
-                        "token": token
-                    }
                     await message.answer(
                         "💬 *Чат открыт!*\n\n"
                         "Вы можете общаться с мастером/клиентом здесь.\n"
@@ -61,7 +66,6 @@ async def start(message: types.Message):
     # Проверка, не является ли команда подтверждением оплаты
     if text.startswith("/start payment_"):
         booking_id = int(text.replace("/start payment_", ""))
-        
         async with aiohttp.ClientSession() as session:
             async with session.post(f"{API_URL}/confirm-payment/{booking_id}") as resp:
                 if resp.status == 200:
@@ -76,7 +80,7 @@ async def start(message: types.Message):
                     await message.answer("❌ Ошибка подтверждения оплаты")
         return
     
-    # Обычное начало
+    # Проверка подписки
     is_subscribed = await check_subscription(user_id)
     
     if not is_subscribed:
@@ -94,6 +98,17 @@ async def start(message: types.Message):
         )
         return
     
+    # Если пользователь — АДМИН → показываем админ-панель
+    if user_id in ADMIN_IDS:
+        await message.answer(
+            "👑 *Beauty Bot Admin Panel*\n\n"
+            "Выберите действие:",
+            parse_mode="Markdown",
+            reply_markup=admin_keyboard()
+        )
+        return
+    
+    # Обычный пользователь → карта мастеров
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🗺️ Открыть карту мастеров", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))],
         [InlineKeyboardButton(text="📝 Стать мастером", url="https://t.me/pinkspotvelur")]
@@ -107,35 +122,121 @@ async def start(message: types.Message):
     )
 
 
-@dp.message()
-async def handle_message(message: types.Message):
-    user_id = message.from_user.id
-    
-    # Если пользователь в активном чате
-    if user_id in active_chats and active_chats[user_id]["type"] == "chat":
-        chat = active_chats[user_id]
-        other_id = chat["other_party_id"]
-        
-        try:
-            await bot.send_message(
-                other_id,
-                f"💬 *Сообщение от {'мастера' if user_id == chat.get('master_id', 0) else 'клиента'}*\n\n{message.text}",
-                parse_mode="Markdown"
-            )
-            await message.answer("✅ Сообщение отправлено")
-        except Exception as e:
-            await message.answer(f"❌ Ошибка отправки: {e}")
+# ========== АДМИН-КОЛБЭКИ ==========
+
+@dp.callback_query(F.data == "admin_add_master")
+async def admin_add_master(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "➕ *Добавление мастера*\n\n"
+        "Отправьте данные в формате:\n"
+        "`Имя | Адрес | Телефон | Instagram | Описание`\n\n"
+        "Пример:\n"
+        "`Анна Смирнова | ул. Тверская, 15 | +79001234567 | @anna_nails | Мастер маникюра`",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@dp.message(lambda msg: msg.text and " | " in msg.text and msg.from_user.id in ADMIN_IDS)
+async def handle_add_master(message: types.Message):
+    parts = message.text.split(" | ")
+    if len(parts) < 2:
+        await message.answer("❌ Неверный формат. Используйте: `Имя | Адрес | Телефон | Instagram | Описание`")
         return
+    
+    name = parts[0].strip()
+    address = parts[1].strip()
+    phone = parts[2].strip() if len(parts) > 2 else ""
+    instagram = parts[3].strip() if len(parts) > 3 else ""
+    description = parts[4].strip() if len(parts) > 4 else ""
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{API_URL}/admin/add-master", json={
+            "name": name,
+            "address": address,
+            "phone": phone,
+            "instagram": instagram,
+            "description": description
+        }) as resp:
+            if resp.status == 200:
+                await message.answer(f"✅ Мастер *{name}* добавлен!", parse_mode="Markdown")
+            else:
+                await message.answer("❌ Ошибка при добавлении мастера")
 
 
-@dp.message(Command("close_chat"))
-async def close_chat(message: types.Message):
-    user_id = message.from_user.id
-    if user_id in active_chats:
-        del active_chats[user_id]
-        await message.answer("💬 *Чат закрыт*\n\nЧтобы начать новый чат, откройте ссылку из уведомления о записи.", parse_mode="Markdown")
-    else:
-        await message.answer("❌ У вас нет активного чата")
+@dp.callback_query(F.data == "admin_list_masters")
+async def admin_list_masters(callback: types.CallbackQuery):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{API_URL}/admin/masters") as resp:
+            if resp.status == 200:
+                masters = await resp.json()
+                if not masters:
+                    await callback.message.answer("📭 Нет мастеров в базе")
+                else:
+                    text = "📋 *Список мастеров:*\n\n"
+                    for m in masters:
+                        text += f"🆔 *ID:* {m['id']}\n"
+                        text += f"👤 *Имя:* {m['name']}\n"
+                        text += f"🤖 *Telegram ID:* {m.get('telegram_id') or '❌ не назначен'}\n"
+                        text += f"📞 *Телефон:* {m.get('phone') or '-'}\n"
+                        text += f"📷 *Instagram:* {m.get('instagram') or '-'}\n"
+                        text += "─" * 20 + "\n\n"
+                    await callback.message.answer(text, parse_mode="Markdown")
+            else:
+                await callback.message.answer("❌ Ошибка загрузки списка мастеров")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "admin_set_telegram")
+async def admin_set_telegram_prompt(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "🔗 *Назначение Telegram ID мастеру*\n\n"
+        "Отправьте в формате:\n"
+        "`ID_МАСТЕРА TELEGRAM_ID`\n\n"
+        "Пример:\n"
+        "`1 123456789`",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@dp.message(lambda msg: msg.text and msg.text.split() and len(msg.text.split()) == 2 and msg.from_user.id in ADMIN_IDS and msg.text.split()[0].isdigit())
+async def handle_set_telegram(message: types.Message):
+    parts = message.text.split()
+    master_id = parts[0]
+    telegram_id = parts[1]
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.patch(f"{API_URL}/admin/set-telegram/{master_id}?telegram_id={telegram_id}") as resp:
+            if resp.status == 200:
+                await message.answer(f"✅ Telegram ID `{telegram_id}` назначен мастеру ID {master_id}", parse_mode="Markdown")
+            else:
+                await message.answer("❌ Ошибка при назначении Telegram ID")
+
+
+@dp.callback_query(F.data == "admin_delete_master")
+async def admin_delete_master_prompt(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "❌ *Удаление мастера*\n\n"
+        "Отправьте ID мастера для удаления:\n"
+        "`ID`\n\n"
+        "Пример:\n"
+        "`1`",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@dp.message(lambda msg: msg.text and msg.text.isdigit() and msg.from_user.id in ADMIN_IDS)
+async def handle_delete_master(message: types.Message):
+    master_id = message.text
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.delete(f"{API_URL}/admin/delete-master/{master_id}") as resp:
+            if resp.status == 200:
+                await message.answer(f"✅ Мастер с ID {master_id} удалён", parse_mode="Markdown")
+            else:
+                await message.answer("❌ Ошибка при удалении мастера")
 
 
 @dp.callback_query(F.data == "check_sub")
@@ -151,6 +252,13 @@ async def check_subscription_callback(callback: types.CallbackQuery):
         await callback.answer("❌ Ты ещё не подписан. Нажми на кнопку «Подписаться» и попробуй снова.", show_alert=True)
 
 
+# ========== КОМАНДА ЗАКРЫТЬ ЧАТ ==========
+@dp.message(Command("close_chat"))
+async def close_chat(message: types.Message):
+    await message.answer("💬 *Чат закрыт*\n\nЧтобы начать новый чат, откройте ссылку из уведомления о записи.", parse_mode="Markdown")
+
+
+# ========== ЗАПУСК ==========
 async def main():
     logger.info("🚀 Клиентский бот запущен")
     await dp.start_polling(bot)
