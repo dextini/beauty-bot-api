@@ -734,63 +734,119 @@ def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     return {"status": "ok"}
 
 
-# ========== ЧАТ ==========
+# ========== ЧАТ (ИСПРАВЛЕННЫЕ ВЕРСИИ) ==========
 
 @app.post("/chat/send")
 def send_message(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     """Отправка сообщения в чат"""
     try:
+        # Проверяем существование бронирования и его статус
+        booking = conn.execute(
+            "SELECT id, status FROM bookings WHERE id = ?",
+            (data["booking_id"],)
+        ).fetchone()
+        
+        if not booking:
+            raise HTTPException(404, "Booking not found")
+        
+        # Чат доступен только после подтверждения записи (оплаты)
+        if booking["status"] != "confirmed":
+            raise HTTPException(403, "Chat available only after payment confirmation")
+        
         conn.execute(
-            """INSERT INTO chat_messages (booking_id, from_id, to_id, message, photo_url, created_at)
-               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-            (data["booking_id"], data["from_id"], data["to_id"], data.get("message"), data.get("photo_url"))
+            """INSERT INTO chat_messages (booking_id, from_id, to_id, message, created_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (data["booking_id"], data["from_id"], data["to_id"], data.get("message"))
         )
         conn.commit()
-        return {"status": "ok"}
+        return {"status": "ok", "message": "Message sent"}
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Error in send_message: {e}")
         raise HTTPException(500, str(e))
 
 
 @app.get("/chat/messages/{booking_id}")
 def get_chat_messages(booking_id: int, user_id: str, conn: sqlite3.Connection = Depends(get_db)):
     """Получить сообщения чата по бронированию"""
-    messages = conn.execute(
-        """SELECT * FROM chat_messages WHERE booking_id = ? ORDER BY created_at ASC""",
-        (booking_id,)
-    ).fetchall()
-    
-    conn.execute(
-        """UPDATE chat_messages SET is_read = 1 WHERE booking_id = ? AND to_id = ? AND is_read = 0""",
-        (booking_id, user_id)
-    )
-    conn.commit()
-    return [dict(m) for m in messages]
+    try:
+        # Проверяем, что пользователь участвует в этом бронировании
+        booking = conn.execute(
+            """SELECT b.id, b.client_telegram_id, m.telegram_id as master_telegram_id
+               FROM bookings b
+               LEFT JOIN masters m ON b.master_id = m.id
+               WHERE b.id = ?""",
+            (booking_id,)
+        ).fetchone()
+        
+        if not booking:
+            return []
+        
+        # Если пользователь не участник чата — возвращаем пустой список
+        if user_id != booking["client_telegram_id"] and user_id != booking["master_telegram_id"]:
+            return []
+        
+        messages = conn.execute(
+            """SELECT * FROM chat_messages WHERE booking_id = ? ORDER BY created_at ASC""",
+            (booking_id,)
+        ).fetchall()
+        
+        # Отмечаем сообщения как прочитанные
+        conn.execute(
+            """UPDATE chat_messages SET is_read = 1 WHERE booking_id = ? AND to_id = ? AND is_read = 0""",
+            (booking_id, user_id)
+        )
+        conn.commit()
+        
+        return [dict(m) for m in messages]
+    except Exception as e:
+        print(f"Error in get_chat_messages: {e}")
+        return []
 
 
 @app.get("/chat/unread/{user_id}")
 def get_unread_count(user_id: str, conn: sqlite3.Connection = Depends(get_db)):
     """Количество непрочитанных сообщений"""
-    count = conn.execute(
-        """SELECT COUNT(*) FROM chat_messages WHERE to_id = ? AND is_read = 0""",
-        (user_id,)
-    ).fetchone()[0]
-    return {"unread": count}
+    try:
+        count = conn.execute(
+            """SELECT COUNT(*) FROM chat_messages WHERE to_id = ? AND is_read = 0""",
+            (user_id,)
+        ).fetchone()[0]
+        return {"unread": count}
+    except Exception as e:
+        print(f"Error in get_unread_count: {e}")
+        return {"unread": 0}
 
 
 @app.get("/chat/booking/{booking_id}/access")
 def check_chat_access(booking_id: int, user_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Проверка доступа к чату (оплачен ли депозит)"""
-    booking = conn.execute(
-        """SELECT status, payment_status FROM bookings WHERE id = ? AND (client_telegram_id = ? OR master_id IN (SELECT id FROM masters WHERE telegram_id = ?))""",
-        (booking_id, user_id, user_id)
-    ).fetchone()
-    
-    if not booking:
-        raise HTTPException(404, "Доступ запрещён")
-    
-    has_access = booking["status"] == "confirmed"
-    
-    return {"access": has_access, "status": booking["status"]}
+    """Проверка доступа к чату (только после оплаты)"""
+    try:
+        # Получаем бронирование и участников
+        booking = conn.execute(
+            """SELECT b.status, b.client_telegram_id, m.telegram_id as master_telegram_id
+               FROM bookings b
+               LEFT JOIN masters m ON b.master_id = m.id
+               WHERE b.id = ?""",
+            (booking_id,)
+        ).fetchone()
+        
+        if not booking:
+            return {"access": False, "status": "not_found", "error": "Booking not found"}
+        
+        # Проверяем, что пользователь — клиент или мастер
+        is_participant = (user_id == booking["client_telegram_id"] or user_id == booking["master_telegram_id"])
+        if not is_participant:
+            return {"access": False, "status": "forbidden", "error": "You are not a participant"}
+        
+        # Доступ открыт, если запись подтверждена (оплачена)
+        has_access = booking["status"] == "confirmed"
+        
+        return {"access": has_access, "status": booking["status"]}
+    except Exception as e:
+        print(f"Error in check_chat_access: {e}")
+        return {"access": False, "status": "error", "error": str(e)}
 
 
 # ========== ОТЗЫВЫ ==========
