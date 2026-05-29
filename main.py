@@ -321,6 +321,44 @@ class BookingIn(BaseModel):
     time: str
 
 
+# ========== ГЕЙМИФИКАЦИЯ МАСТЕРОВ ==========
+
+def get_master_level_and_commission(completed_bookings: int):
+    """Рассчитываем уровень мастера и комиссию для клиента"""
+    if completed_bookings >= 700:
+        return {
+            "level": "Платина", 
+            "commission": 6, 
+            "badge": "💎", 
+            "color": "#b0c4de",
+            "gradient": "linear-gradient(135deg, #e8e8e8, #c0c0c0)"
+        }
+    elif completed_bookings >= 150:
+        return {
+            "level": "Золото", 
+            "commission": 7, 
+            "badge": "🏆", 
+            "color": "#ffd700",
+            "gradient": "linear-gradient(135deg, #ffd700, #ffb347)"
+        }
+    elif completed_bookings >= 50:
+        return {
+            "level": "Серебро", 
+            "commission": 8, 
+            "badge": "⭐", 
+            "color": "#c0c0c0",
+            "gradient": "linear-gradient(135deg, #e0e0e0, #a0a0a0)"
+        }
+    else:
+        return {
+            "level": "Новичок", 
+            "commission": 9, 
+            "badge": "🟢", 
+            "color": "#4caf50",
+            "gradient": "linear-gradient(135deg, #81c784, #388e3c)"
+        }
+
+
 # ========== ОСНОВНЫЕ ЭНДПОИНТЫ ==========
 
 @app.get("/masters", response_model=List[MasterOut])
@@ -328,6 +366,14 @@ def get_masters(conn: sqlite3.Connection = Depends(get_db)):
     masters = conn.execute("SELECT * FROM masters").fetchall()
     result = []
     for m in masters:
+        # Считаем завершённые заказы для каждого мастера
+        completed = conn.execute(
+            "SELECT COUNT(*) FROM bookings WHERE master_id = ? AND status = 'confirmed'",
+            (m["id"],)
+        ).fetchone()[0]
+        
+        level_info = get_master_level_and_commission(completed)
+        
         services = conn.execute("SELECT * FROM services WHERE master_id = ?", (m["id"],)).fetchall()
         master_dict = dict(m)
         if master_dict.get("photos"):
@@ -338,6 +384,14 @@ def get_masters(conn: sqlite3.Connection = Depends(get_db)):
         else:
             master_dict["photos"] = []
         master_dict["services"] = [dict(s) for s in services]
+        
+        # Добавляем уровень
+        master_dict["level"] = level_info["level"]
+        master_dict["level_badge"] = level_info["badge"]
+        master_dict["commission"] = level_info["commission"]
+        master_dict["completed_bookings"] = completed
+        master_dict["level_color"] = level_info["color"]
+        
         result.append(master_dict)
     return result
 
@@ -347,6 +401,13 @@ def get_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     m = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
     if not m:
         raise HTTPException(status_code=404, detail="Master not found")
+    
+    completed = conn.execute(
+        "SELECT COUNT(*) FROM bookings WHERE master_id = ? AND status = 'confirmed'",
+        (master_id,)
+    ).fetchone()[0]
+    level_info = get_master_level_and_commission(completed)
+    
     services = conn.execute("SELECT * FROM services WHERE master_id = ?", (master_id,)).fetchall()
     master_dict = dict(m)
     if master_dict.get("photos"):
@@ -357,6 +418,10 @@ def get_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     else:
         master_dict["photos"] = []
     master_dict["services"] = [dict(s) for s in services]
+    master_dict["level"] = level_info["level"]
+    master_dict["level_badge"] = level_info["badge"]
+    master_dict["commission"] = level_info["commission"]
+    master_dict["completed_bookings"] = completed
     return master_dict
 
 
@@ -734,13 +799,12 @@ def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     return {"status": "ok"}
 
 
-# ========== ЧАТ (ИСПРАВЛЕННЫЕ ВЕРСИИ) ==========
+# ========== ЧАТ ==========
 
 @app.post("/chat/send")
 def send_message(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     """Отправка сообщения в чат"""
     try:
-        # Проверяем существование бронирования и его статус
         booking = conn.execute(
             "SELECT id, status FROM bookings WHERE id = ?",
             (data["booking_id"],)
@@ -749,7 +813,6 @@ def send_message(data: dict, conn: sqlite3.Connection = Depends(get_db)):
         if not booking:
             raise HTTPException(404, "Booking not found")
         
-        # Чат доступен только после подтверждения записи (оплаты)
         if booking["status"] != "confirmed":
             raise HTTPException(403, "Chat available only after payment confirmation")
         
@@ -771,7 +834,6 @@ def send_message(data: dict, conn: sqlite3.Connection = Depends(get_db)):
 def get_chat_messages(booking_id: int, user_id: str, conn: sqlite3.Connection = Depends(get_db)):
     """Получить сообщения чата по бронированию"""
     try:
-        # Проверяем, что пользователь участвует в этом бронировании
         booking = conn.execute(
             """SELECT b.id, b.client_telegram_id, m.telegram_id as master_telegram_id
                FROM bookings b
@@ -783,7 +845,6 @@ def get_chat_messages(booking_id: int, user_id: str, conn: sqlite3.Connection = 
         if not booking:
             return []
         
-        # Если пользователь не участник чата — возвращаем пустой список
         if user_id != booking["client_telegram_id"] and user_id != booking["master_telegram_id"]:
             return []
         
@@ -792,7 +853,6 @@ def get_chat_messages(booking_id: int, user_id: str, conn: sqlite3.Connection = 
             (booking_id,)
         ).fetchall()
         
-        # Отмечаем сообщения как прочитанные
         conn.execute(
             """UPDATE chat_messages SET is_read = 1 WHERE booking_id = ? AND to_id = ? AND is_read = 0""",
             (booking_id, user_id)
@@ -823,7 +883,6 @@ def get_unread_count(user_id: str, conn: sqlite3.Connection = Depends(get_db)):
 def check_chat_access(booking_id: int, user_id: str, conn: sqlite3.Connection = Depends(get_db)):
     """Проверка доступа к чату (только после оплаты)"""
     try:
-        # Получаем бронирование и участников
         booking = conn.execute(
             """SELECT b.status, b.client_telegram_id, m.telegram_id as master_telegram_id
                FROM bookings b
@@ -835,12 +894,10 @@ def check_chat_access(booking_id: int, user_id: str, conn: sqlite3.Connection = 
         if not booking:
             return {"access": False, "status": "not_found", "error": "Booking not found"}
         
-        # Проверяем, что пользователь — клиент или мастер
         is_participant = (user_id == booking["client_telegram_id"] or user_id == booking["master_telegram_id"])
         if not is_participant:
             return {"access": False, "status": "forbidden", "error": "You are not a participant"}
         
-        # Доступ открыт, если запись подтверждена (оплачена)
         has_access = booking["status"] == "confirmed"
         
         return {"access": has_access, "status": booking["status"]}
@@ -936,13 +993,45 @@ def get_master_stats(telegram_id: str, conn: sqlite3.Connection = Depends(get_db
     
     rating = conn.execute("SELECT AVG(rating) FROM reviews WHERE master_id = ?", (master_id,)).fetchone()[0] or 0
     
+    completed_bookings = confirmed_bookings
+    
+    level_info = get_master_level_and_commission(completed_bookings)
+    
+    # Определяем следующий уровень
+    next_level_data = {}
+    if completed_bookings < 50:
+        next_level_data = {"bookings_needed": 50 - completed_bookings, "next_commission": 8, "next_level": "Серебро"}
+    elif completed_bookings < 150:
+        next_level_data = {"bookings_needed": 150 - completed_bookings, "next_commission": 7, "next_level": "Золото"}
+    elif completed_bookings < 700:
+        next_level_data = {"bookings_needed": 700 - completed_bookings, "next_commission": 6, "next_level": "Платина"}
+    else:
+        next_level_data = {"bookings_needed": 0, "next_commission": 6, "next_level": "Максимум"}
+    
+    progress_percent = 0
+    if completed_bookings < 50:
+        progress_percent = (completed_bookings / 50) * 100
+    elif completed_bookings < 150:
+        progress_percent = ((completed_bookings - 50) / 100) * 100
+    elif completed_bookings < 700:
+        progress_percent = ((completed_bookings - 150) / 550) * 100
+    else:
+        progress_percent = 100
+    
     return {
         "total_bookings": total_bookings,
         "confirmed_bookings": confirmed_bookings,
         "pending_bookings": pending_bookings,
         "revenue": revenue,
         "unique_clients": unique_clients,
-        "rating": round(rating, 1)
+        "rating": round(rating, 1),
+        "completed_bookings": completed_bookings,
+        "level": level_info["level"],
+        "level_badge": level_info["badge"],
+        "commission": level_info["commission"],
+        "level_color": level_info["color"],
+        "next_level": next_level_data,
+        "progress_percent": progress_percent
     }
 
 
