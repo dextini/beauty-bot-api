@@ -1053,6 +1053,23 @@ def set_master_icon(telegram_id: str, icon: str, conn: sqlite3.Connection = Depe
     return {"status": "ok", "message": "Icon updated"}
 
 
+# ========== НОВЫЙ ЭНДПОИНТ ДЛЯ ЛОКАЦИИ МАСТЕРА ==========
+
+@app.patch("/master/{telegram_id}/location")
+def update_master_location(telegram_id: str, data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    """Обновление координат мастера на карте"""
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    
+    conn.execute(
+        "UPDATE masters SET lat = ?, lon = ? WHERE id = ?",
+        (data["lat"], data["lon"], master["id"])
+    )
+    conn.commit()
+    return {"status": "ok", "message": "Location updated"}
+
+
 # ========== АДМИН-ПАНЕЛЬ ==========
 
 @app.post("/admin/add-master")
