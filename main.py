@@ -69,7 +69,8 @@ def init_db():
             registered_at TEXT DEFAULT CURRENT_TIMESTAMP,
             bot_token TEXT,
             photos TEXT,
-            rating REAL DEFAULT 0
+            rating REAL DEFAULT 0,
+            icon TEXT DEFAULT '💅'
         )
     """)
 
@@ -183,6 +184,11 @@ def init_db():
     except:
         pass
 
+    try:
+        c.execute("ALTER TABLE masters ADD COLUMN icon TEXT DEFAULT '💅'")
+    except:
+        pass
+
     for col in ["telegram_id TEXT", "work_start TEXT DEFAULT '09:00'", "work_end TEXT DEFAULT '20:00'", "registered_at TEXT DEFAULT CURRENT_TIMESTAMP"]:
         try:
             c.execute(f"ALTER TABLE masters ADD COLUMN {col}")
@@ -203,11 +209,11 @@ def init_db():
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
         masters_data = [
-            ("Алина Козлова", None, "Мастер маникюра с 5-летним опытом", "ул. Ленина, 12", 55.751244, 37.618423, "+79001234567", "@alina_nails"),
-            ("Мария Иванова", None, "Профессиональный визажист и мастер бровей", "пр. Мира, 45", 55.763244, 37.628423, "+79009876543", "@maria_beauty"),
-            ("Екатерина Смирнова", None, "Специалист по уходу за ресницами", "ул. Садовая, 8", 55.745244, 37.608423, "+79005551234", "@kate_lashes"),
+            ("Алина Козлова", None, "Мастер маникюра с 5-летним опытом", "ул. Ленина, 12", 55.751244, 37.618423, "+79001234567", "@alina_nails", "💅"),
+            ("Мария Иванова", None, "Профессиональный визажист и мастер бровей", "пр. Мира, 45", 55.763244, 37.628423, "+79009876543", "@maria_beauty", "👁️"),
+            ("Екатерина Смирнова", None, "Специалист по уходу за ресницами", "ул. Садовая, 8", 55.745244, 37.608423, "+79005551234", "@kate_lashes", "👀"),
         ]
-        c.executemany("INSERT INTO masters (name, photo_url, description, address, lat, lon, phone, instagram) VALUES (?,?,?,?,?,?,?,?)", masters_data)
+        c.executemany("INSERT INTO masters (name, photo_url, description, address, lat, lon, phone, instagram, icon) VALUES (?,?,?,?,?,?,?,?,?)", masters_data)
         conn.commit()
 
         c.execute("SELECT id FROM masters")
@@ -310,6 +316,7 @@ class MasterOut(BaseModel):
     rating: Optional[float] = 0
     work_start: Optional[str] = "09:00"
     work_end: Optional[str] = "20:00"
+    icon: Optional[str] = "💅"
 
 class BookingIn(BaseModel):
     master_id: int
@@ -321,44 +328,6 @@ class BookingIn(BaseModel):
     time: str
 
 
-# ========== ГЕЙМИФИКАЦИЯ МАСТЕРОВ ==========
-
-def get_master_level_and_commission(completed_bookings: int):
-    """Рассчитываем уровень мастера и комиссию для клиента"""
-    if completed_bookings >= 700:
-        return {
-            "level": "Платина", 
-            "commission": 6, 
-            "badge": "💎", 
-            "color": "#b0c4de",
-            "gradient": "linear-gradient(135deg, #e8e8e8, #c0c0c0)"
-        }
-    elif completed_bookings >= 150:
-        return {
-            "level": "Золото", 
-            "commission": 7, 
-            "badge": "🏆", 
-            "color": "#ffd700",
-            "gradient": "linear-gradient(135deg, #ffd700, #ffb347)"
-        }
-    elif completed_bookings >= 50:
-        return {
-            "level": "Серебро", 
-            "commission": 8, 
-            "badge": "⭐", 
-            "color": "#c0c0c0",
-            "gradient": "linear-gradient(135deg, #e0e0e0, #a0a0a0)"
-        }
-    else:
-        return {
-            "level": "Новичок", 
-            "commission": 9, 
-            "badge": "🟢", 
-            "color": "#4caf50",
-            "gradient": "linear-gradient(135deg, #81c784, #388e3c)"
-        }
-
-
 # ========== ОСНОВНЫЕ ЭНДПОИНТЫ ==========
 
 @app.get("/masters", response_model=List[MasterOut])
@@ -366,13 +335,10 @@ def get_masters(conn: sqlite3.Connection = Depends(get_db)):
     masters = conn.execute("SELECT * FROM masters").fetchall()
     result = []
     for m in masters:
-        # Считаем завершённые заказы для каждого мастера
         completed = conn.execute(
             "SELECT COUNT(*) FROM bookings WHERE master_id = ? AND status = 'confirmed'",
             (m["id"],)
         ).fetchone()[0]
-        
-        level_info = get_master_level_and_commission(completed)
         
         services = conn.execute("SELECT * FROM services WHERE master_id = ?", (m["id"],)).fetchall()
         master_dict = dict(m)
@@ -384,14 +350,7 @@ def get_masters(conn: sqlite3.Connection = Depends(get_db)):
         else:
             master_dict["photos"] = []
         master_dict["services"] = [dict(s) for s in services]
-        
-        # Добавляем уровень
-        master_dict["level"] = level_info["level"]
-        master_dict["level_badge"] = level_info["badge"]
-        master_dict["commission"] = level_info["commission"]
         master_dict["completed_bookings"] = completed
-        master_dict["level_color"] = level_info["color"]
-        
         result.append(master_dict)
     return result
 
@@ -406,7 +365,6 @@ def get_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
         "SELECT COUNT(*) FROM bookings WHERE master_id = ? AND status = 'confirmed'",
         (master_id,)
     ).fetchone()[0]
-    level_info = get_master_level_and_commission(completed)
     
     services = conn.execute("SELECT * FROM services WHERE master_id = ?", (master_id,)).fetchall()
     master_dict = dict(m)
@@ -418,9 +376,6 @@ def get_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     else:
         master_dict["photos"] = []
     master_dict["services"] = [dict(s) for s in services]
-    master_dict["level"] = level_info["level"]
-    master_dict["level_badge"] = level_info["badge"]
-    master_dict["commission"] = level_info["commission"]
     master_dict["completed_bookings"] = completed
     return master_dict
 
@@ -552,11 +507,12 @@ def add_master(master: dict, conn: sqlite3.Connection = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Missing name or address")
     
     conn.execute(
-        """INSERT INTO masters (name, address, lat, lon, phone, instagram, description, registered_at) 
-           VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP)""",
+        """INSERT INTO masters (name, address, lat, lon, phone, instagram, description, icon, registered_at) 
+           VALUES (?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)""",
         (master["name"], master["address"], 
          master.get("lat", 55.751244), master.get("lon", 37.618423),
-         master.get("phone"), master.get("instagram"), master.get("description"))
+         master.get("phone"), master.get("instagram"), master.get("description"),
+         master.get("icon", "💅"))
     )
     conn.commit()
     return {"status": "ok", "message": "Master added"}
@@ -601,6 +557,17 @@ def set_master_bot_token(master_id: int, bot_token: str, conn: sqlite3.Connectio
     conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (bot_token, master_id))
     conn.commit()
     return {"status": "ok", "message": "Bot token saved"}
+
+
+@app.patch("/masters/{master_id}/icon")
+def set_master_icon(master_id: int, icon: str, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+    if not master:
+        raise HTTPException(status_code=404, detail="Master not found")
+    
+    conn.execute("UPDATE masters SET icon = ? WHERE id = ?", (icon, master_id))
+    conn.commit()
+    return {"status": "ok", "message": "Icon saved"}
 
 
 # ========== БРОНИРОВАНИЯ ==========
@@ -698,7 +665,6 @@ def get_master_bookings(master_id: int, conn: sqlite3.Connection = Depends(get_d
 
 @app.post("/user/register")
 def register_user(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Регистрация пользователя при /start"""
     try:
         conn.execute(
             "INSERT OR IGNORE INTO users (telegram_id, registered_at) VALUES (?, CURRENT_TIMESTAMP)",
@@ -712,8 +678,6 @@ def register_user(data: dict, conn: sqlite3.Connection = Depends(get_db)):
 
 @app.get("/user/trial/{telegram_id}")
 def check_trial(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Проверяем, активен ли ещё бесплатный период у пользователя"""
-    
     user = conn.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
     
     if not user:
@@ -738,8 +702,6 @@ def check_trial(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
 
 @app.post("/create-payment")
 def create_payment(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Создание платежа (5% от суммы)"""
-    
     booking_id = data["booking_id"]
     
     booking = conn.execute("""
@@ -764,7 +726,6 @@ def create_payment(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     """, (booking_id, deposit, payment_id))
     conn.commit()
     
-    # Временная заглушка (замени на реальную ссылку ЮKassa)
     payment_url = f"https://t.me/pinkspotvelur_bot?start=pay_{payment_id}"
     
     return {
@@ -777,8 +738,6 @@ def create_payment(data: dict, conn: sqlite3.Connection = Depends(get_db)):
 
 @app.post("/payment-callback")
 def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Callback после успешной оплаты"""
-    
     payment_id = data.get("payment_id")
     
     conn.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
@@ -803,7 +762,6 @@ def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
 
 @app.post("/chat/send")
 def send_message(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Отправка сообщения в чат"""
     try:
         booking = conn.execute(
             "SELECT id, status FROM bookings WHERE id = ?",
@@ -832,7 +790,6 @@ def send_message(data: dict, conn: sqlite3.Connection = Depends(get_db)):
 
 @app.get("/chat/messages/{booking_id}")
 def get_chat_messages(booking_id: int, user_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Получить сообщения чата по бронированию"""
     try:
         booking = conn.execute(
             """SELECT b.id, b.client_telegram_id, m.telegram_id as master_telegram_id
@@ -867,7 +824,6 @@ def get_chat_messages(booking_id: int, user_id: str, conn: sqlite3.Connection = 
 
 @app.get("/chat/unread/{user_id}")
 def get_unread_count(user_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Количество непрочитанных сообщений"""
     try:
         count = conn.execute(
             """SELECT COUNT(*) FROM chat_messages WHERE to_id = ? AND is_read = 0""",
@@ -881,7 +837,6 @@ def get_unread_count(user_id: str, conn: sqlite3.Connection = Depends(get_db)):
 
 @app.get("/chat/booking/{booking_id}/access")
 def check_chat_access(booking_id: int, user_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Проверка доступа к чату (только после оплаты)"""
     try:
         booking = conn.execute(
             """SELECT b.status, b.client_telegram_id, m.telegram_id as master_telegram_id
@@ -958,6 +913,17 @@ def reply_to_review(review_id: int, data: dict, conn: sqlite3.Connection = Depen
 
 # ========== ВЕБ-КАБИНЕТ МАСТЕРА ==========
 
+def get_level_info(completed_bookings: int):
+    if completed_bookings >= 700:
+        return {"level": "Платина", "commission": 6, "badge": "💎", "color": "#b0c4de"}
+    elif completed_bookings >= 150:
+        return {"level": "Золото", "commission": 7, "badge": "🏆", "color": "#ffd700"}
+    elif completed_bookings >= 50:
+        return {"level": "Серебро", "commission": 8, "badge": "⭐", "color": "#c0c0c0"}
+    else:
+        return {"level": "Новичок", "commission": 9, "badge": "🌱", "color": "#4caf50"}
+
+
 @app.get("/master/{telegram_id}/stats")
 def get_master_stats(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
@@ -994,29 +960,7 @@ def get_master_stats(telegram_id: str, conn: sqlite3.Connection = Depends(get_db
     rating = conn.execute("SELECT AVG(rating) FROM reviews WHERE master_id = ?", (master_id,)).fetchone()[0] or 0
     
     completed_bookings = confirmed_bookings
-    
-    level_info = get_master_level_and_commission(completed_bookings)
-    
-    # Определяем следующий уровень
-    next_level_data = {}
-    if completed_bookings < 50:
-        next_level_data = {"bookings_needed": 50 - completed_bookings, "next_commission": 8, "next_level": "Серебро"}
-    elif completed_bookings < 150:
-        next_level_data = {"bookings_needed": 150 - completed_bookings, "next_commission": 7, "next_level": "Золото"}
-    elif completed_bookings < 700:
-        next_level_data = {"bookings_needed": 700 - completed_bookings, "next_commission": 6, "next_level": "Платина"}
-    else:
-        next_level_data = {"bookings_needed": 0, "next_commission": 6, "next_level": "Максимум"}
-    
-    progress_percent = 0
-    if completed_bookings < 50:
-        progress_percent = (completed_bookings / 50) * 100
-    elif completed_bookings < 150:
-        progress_percent = ((completed_bookings - 50) / 100) * 100
-    elif completed_bookings < 700:
-        progress_percent = ((completed_bookings - 150) / 550) * 100
-    else:
-        progress_percent = 100
+    level_info = get_level_info(completed_bookings)
     
     return {
         "total_bookings": total_bookings,
@@ -1029,9 +973,7 @@ def get_master_stats(telegram_id: str, conn: sqlite3.Connection = Depends(get_db
         "level": level_info["level"],
         "level_badge": level_info["badge"],
         "commission": level_info["commission"],
-        "level_color": level_info["color"],
-        "next_level": next_level_data,
-        "progress_percent": progress_percent
+        "level_color": level_info["color"]
     }
 
 
@@ -1100,17 +1042,29 @@ def get_master_bookings_web(telegram_id: str, conn: sqlite3.Connection = Depends
     return [dict(b) for b in bookings]
 
 
+@app.patch("/master/{telegram_id}/icon")
+def set_master_icon(telegram_id: str, icon: str, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    
+    conn.execute("UPDATE masters SET icon = ? WHERE id = ?", (icon, master["id"]))
+    conn.commit()
+    return {"status": "ok", "message": "Icon updated"}
+
+
 # ========== АДМИН-ПАНЕЛЬ ==========
 
 @app.post("/admin/add-master")
 def admin_add_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     try:
         conn.execute(
-            """INSERT INTO masters (name, address, lat, lon, phone, instagram, description, telegram_id, work_start, work_end) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO masters (name, address, lat, lon, phone, instagram, description, telegram_id, work_start, work_end, icon) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (data["name"], data["address"], data.get("lat", 55.751244), data.get("lon", 37.618423),
              data.get("phone", ""), data.get("instagram", ""), data.get("description", ""),
-             data.get("telegram_id", ""), data.get("work_start", "09:00"), data.get("work_end", "20:00"))
+             data.get("telegram_id", ""), data.get("work_start", "09:00"), data.get("work_end", "20:00"),
+             data.get("icon", "💅"))
         )
         conn.commit()
         return {"status": "ok", "message": f"Мастер {data['name']} добавлен"}
@@ -1120,7 +1074,7 @@ def admin_add_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
 
 @app.get("/admin/masters")
 def admin_get_masters(conn: sqlite3.Connection = Depends(get_db)):
-    masters = conn.execute("SELECT id, name, telegram_id, phone, instagram FROM masters").fetchall()
+    masters = conn.execute("SELECT id, name, telegram_id, phone, instagram, icon FROM masters").fetchall()
     return [dict(m) for m in masters]
 
 
@@ -1139,6 +1093,13 @@ def admin_set_telegram(master_id: int, telegram_id: str, conn: sqlite3.Connectio
     conn.execute("UPDATE masters SET telegram_id = ? WHERE id = ?", (telegram_id, master_id))
     conn.commit()
     return {"status": "ok", "message": f"telegram_id {telegram_id} назначен мастеру {master_id}"}
+
+
+@app.patch("/admin/set-icon/{master_id}")
+def admin_set_icon(master_id: int, icon: str, conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute("UPDATE masters SET icon = ? WHERE id = ?", (icon, master_id))
+    conn.commit()
+    return {"status": "ok", "message": f"Иконка {icon} назначена мастеру {master_id}"}
 
 
 @app.get("/chat/{token}")
