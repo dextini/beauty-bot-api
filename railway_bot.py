@@ -1,340 +1,390 @@
 import asyncio
 import logging
 import os
-import json
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
+from aiogram.types import WebAppInfo, InlineKeyboardButton, InlineKeyboardMarkup
 from datetime import datetime, timedelta
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 API_URL = os.getenv("API_URL", "https://intuitive-fascination-production-ce82.up.railway.app")
+CHANNEL_USERNAME = "@pinkspotnews"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Замени на свой Telegram ID
-ADMIN_IDS = [868528632]
+# ========== АДМИНЫ ==========
+ADMIN_IDS = [868528632]  # ТВОЙ TELEGRAM ID
 
-# Переменные для Google Sheets
-GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
-SHEET_ID = os.getenv("SHEET_ID")
+# ========== ПРОВЕРКА ПОДПИСКИ ==========
+async def check_subscription(user_id: int) -> bool:
+    try:
+        chat_member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
+        return chat_member.status in ["member", "administrator", "creator"]
+    except:
+        return False
+
+# ========== КЛАВИАТУРЫ ==========
+def admin_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить мастера", callback_data="admin_add_master")],
+        [InlineKeyboardButton(text="📋 Список мастеров", callback_data="admin_list_masters")],
+        [InlineKeyboardButton(text="🔗 Назначить Telegram ID", callback_data="admin_set_telegram")],
+        [InlineKeyboardButton(text="❌ Удалить мастера", callback_data="admin_delete_master")],
+        [InlineKeyboardButton(text="🎫 Создать промокод", callback_data="admin_add_promo")],
+        [InlineKeyboardButton(text="🗺️ Открыть карту", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))]
+    ])
+
+def master_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Мой кабинет мастера", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))],
+        [InlineKeyboardButton(text="🔗 Поделиться ссылкой", callback_data="share_master_link")],
+        [InlineKeyboardButton(text="🗺️ Открыть карту клиентов", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))]
+    ])
+
+def client_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗺️ Открыть карту мастеров", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))],
+        [InlineKeyboardButton(text="📝 Стать мастером", url="https://t.me/pinkspotvelur")]
+    ])
+
+def subscription_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Подписаться на канал", url="https://t.me/pinkspotnews")],
+        [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_sub")]
+    ])
 
 
-async def api_request(method: str, endpoint: str, data=None):
-    async with aiohttp.ClientSession() as s:
-        async with s.request(method, f"{API_URL}{endpoint}", json=data) as r:
-            if r.status == 200:
-                return await r.json()
-            return None
-
-
+# ========== ОСНОВНАЯ КОМАНДА /START ==========
 @dp.message(CommandStart())
 async def start(message: types.Message):
     user_id = message.from_user.id
+    text = message.text
+    
+    logger.info(f"Пользователь {user_id} вызвал /start")
+    
+    # Регистрация пользователя
+    async with aiohttp.ClientSession() as session:
+        await session.post(f"{API_URL}/user/register", json={"telegram_id": str(user_id)})
+    
+    # Обработка чата
+    if text.startswith("/start chat_"):
+        token = text.replace("/start chat_", "")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{API_URL}/chat/{token}") as resp:
+                if resp.status == 200:
+                    await message.answer(
+                        "💬 *Чат открыт!*\n\n"
+                        "Вы можете общаться с мастером/клиентом здесь.\n"
+                        "✉️ *Чтобы закрыть чат, напишите /close_chat*",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await message.answer("❌ Чат не найден или устарел")
+        return
+    
+    # Обработка оплаты
+    if text.startswith("/start pay_"):
+        payment_id = text.replace("/start pay_", "")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{API_URL}/payment-callback", json={"payment_id": payment_id}) as resp:
+                if resp.status == 200:
+                    await message.answer(
+                        "✅ *Оплата подтверждена!*\n\n"
+                        "Ваша запись подтверждена, и чат с мастером открыт.",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await message.answer("❌ Ошибка подтверждения оплаты")
+        return
+    
+    # Проверка подписки на канал
+    is_subscribed = await check_subscription(user_id)
+    if not is_subscribed:
+        await message.answer(
+            "🌸 *Требуется подписка!*\n\n"
+            "Чтобы пользоваться картой мастеров, подпишись на наш канал:\n"
+            f"👉 [pinkspot news](https://t.me/pinkspotnews)\n\n"
+            "После подписки нажми «Проверить подписку».",
+            reply_markup=subscription_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+    
+    # ========== АДМИН-ПАНЕЛЬ ==========
     if user_id in ADMIN_IDS:
+        logger.info(f"Админ {user_id} получил админ-панель")
         await message.answer(
             "👑 *Beauty Bot Admin Panel*\n\n"
-            "📋 /pending — заявки мастеров\n"
-            "✅ /approve ID — одобрить\n"
-            "❌ /reject ID — отклонить\n"
-            "📊 /stats — общая статистика\n"
-            "🎫 /add_promo КОД % ДНИ — создать промокод\n"
-            "📥 /import_sheet — импорт мастеров из Google Таблицы\n"
-            "🗑️ /delete_master ID — удалить мастера с карты\n"
-            "🤖 /set_master_bot ID ТОКЕН — привязать бота мастеру\n"
-            "📸 /add_photo ID ССЫЛКА — добавить фото в портфолио\n"
-            "📋 /list_photos ID — список фото\n"
-            "🗑️ /del_photo ID ИНДЕКС — удалить фото\n"
-            "👤 /set_avatar ID ССЫЛКА — установить аватар (личное фото мастера)",
-            parse_mode="Markdown"
-        )
-    else:
-        await message.answer(
-            "💅 *Добро пожаловать в Beauty Map!*\n\n"
-            "Нажми кнопку ниже, чтобы найти мастера рядом с тобой.\n\n"
-            "✂️ *Хотите стать мастером?* Нажмите кнопку «Стать мастером» и напишите мне в личные сообщения.",
+            "Выберите действие:",
             parse_mode="Markdown",
-            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="🗺️ Открыть карту мастеров", web_app=types.WebAppInfo(url="https://project-ev8r3.vercel.app"))],
-                [types.InlineKeyboardButton(text="📝 Стать мастером", url="https://t.me/pinkspotvelur")]
-            ])
+            reply_markup=admin_keyboard()
         )
-
-
-@dp.message(Command("pending"))
-async def pending(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
         return
-    requests = await api_request("GET", "/register-requests/pending")
-    if not requests:
-        await message.answer("📭 Нет новых заявок")
-        return
-    for r in requests:
+    
+    # ========== ПРОВЕРКА НА МАСТЕРА ==========
+    is_master = False
+    master_name = None
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(f"{API_URL}/masters/by_telegram/{user_id}") as resp:
+                if resp.status == 200:
+                    master_data = await resp.json()
+                    is_master = True
+                    master_name = master_data.get("name")
+                    logger.info(f"Мастер {master_name} (ID: {user_id}) авторизован")
+        except Exception as e:
+            logger.error(f"Ошибка проверки мастера: {e}")
+    
+    if is_master:
         await message.answer(
-            f"🆔 ID: `{r['telegram_id']}`\n"
-            f"👤 Имя: {r['name']}\n"
-            f"📍 Адрес: {r['address']}\n"
-            f"📞 Телефон: {r['phone']}\n"
-            f"✅ /approve {r['telegram_id']}",
-            parse_mode="Markdown"
+            f"👋 *Здравствуйте, {master_name}!*\n\n"
+            f"✅ Вы зарегистрированы как мастер Beauty Map.\n\n"
+            f"📊 Нажмите «Мой кабинет мастера» для управления:\n"
+            f"• Услугами и ценами\n"
+            f"• Расписанием и днями отдыха\n"
+            f"• Просмотром записей клиентов\n"
+            f"• Общением в чате\n\n"
+            f"🔗 Можете поделиться ссылкой на свой профиль с клиентами!",
+            parse_mode="Markdown",
+            reply_markup=master_keyboard()
         )
-
-
-@dp.message(Command("approve"))
-async def approve(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
         return
-    parts = message.text.split()
+    
+    # ========== ОБЫЧНЫЙ КЛИЕНТ ==========
+    logger.info(f"Обычный клиент {user_id}")
+    await message.answer(
+        "💅 *Добро пожаловать в Beauty Map!*\n\n"
+        "Нажми кнопку ниже, чтобы найти мастера рядом с тобой.\n\n"
+        "✂️ *Хотите стать мастером?* Нажмите кнопку «Стать мастером».",
+        parse_mode="Markdown",
+        reply_markup=client_keyboard()
+    )
+
+
+# ========== АДМИН-КОЛБЭКИ ==========
+
+@dp.callback_query(F.data == "admin_add_master")
+async def admin_add_master(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "➕ *Добавление мастера*\n\n"
+        "Отправьте данные в формате:\n"
+        "`Имя | Адрес | Телефон | Instagram | Описание`\n\n"
+        "Пример:\n"
+        "`Алина Козлова | ул. Ленина, 12 | +79001234567 | @alina_nails | Мастер маникюра`\n\n"
+        "📍 *Важно:* после добавления назначьте Telegram ID мастеру через пункт «Назначить Telegram ID».",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@dp.message(lambda msg: msg.text and " | " in msg.text and msg.from_user.id in ADMIN_IDS)
+async def handle_add_master(message: types.Message):
+    parts = message.text.split(" | ")
     if len(parts) < 2:
-        await message.answer("❌ Формат: `/approve TELEGRAM_ID`", parse_mode="Markdown")
+        await message.answer("❌ Неверный формат. Используйте: `Имя | Адрес | Телефон | Instagram | Описание`", parse_mode="Markdown")
         return
-    resp = await api_request("POST", f"/approve-master/{parts[1]}")
-    if resp:
-        await message.answer(f"✅ Мастер `{parts[1]}` одобрен", parse_mode="Markdown")
-    else:
-        await message.answer("❌ Ошибка при одобрении")
-
-
-@dp.message(Command("reject"))
-async def reject(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
-        return
-    parts = message.text.split()
-    if len(parts) < 2:
-        await message.answer("❌ Формат: `/reject TELEGRAM_ID`", parse_mode="Markdown")
-        return
-    await message.answer(f"❌ Мастер `{parts[1]}` отклонён", parse_mode="Markdown")
-
-
-@dp.message(Command("delete_master"))
-async def delete_master(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
-        return
-    parts = message.text.split()
-    if len(parts) < 2:
-        await message.answer("❌ Формат: `/delete_master ID`", parse_mode="Markdown")
-        return
-    master_id = parts[1]
+    
+    name = parts[0].strip()
+    address = parts[1].strip()
+    phone = parts[2].strip() if len(parts) > 2 else ""
+    instagram = parts[3].strip() if len(parts) > 3 else ""
+    description = parts[4].strip() if len(parts) > 4 else ""
+    
     async with aiohttp.ClientSession() as session:
-        async with session.delete(f"{API_URL}/masters/{master_id}") as resp:
+        async with session.post(f"{API_URL}/admin/add-master", json={
+            "name": name,
+            "address": address,
+            "phone": phone,
+            "instagram": instagram,
+            "description": description
+        }) as resp:
             if resp.status == 200:
-                await message.answer(f"✅ Мастер с ID `{master_id}` удалён", parse_mode="Markdown")
+                await message.answer(f"✅ Мастер *{name}* добавлен!\n\n🔗 Теперь назначьте ему Telegram ID через пункт «Назначить Telegram ID».", parse_mode="Markdown")
             else:
-                await message.answer(f"❌ Ошибка при удалении мастера {master_id}")
+                await message.answer("❌ Ошибка при добавлении мастера")
 
 
-@dp.message(Command("set_master_bot"))
-async def set_master_bot(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
-        return
-    parts = message.text.split()
-    if len(parts) != 3:
-        await message.answer("❌ Формат: `/set_master_bot ID_МАСТЕРА ТОКЕН`\n\nПример:\n`/set_master_bot 1 1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw`", parse_mode="Markdown")
-        return
-    
-    master_id = parts[1]
-    bot_token = parts[2]
-    
+@dp.callback_query(F.data == "admin_list_masters")
+async def admin_list_masters(callback: types.CallbackQuery):
     async with aiohttp.ClientSession() as session:
-        async with session.patch(f"{API_URL}/masters/{master_id}/bot-token?bot_token={bot_token}") as resp:
+        async with session.get(f"{API_URL}/admin/masters") as resp:
             if resp.status == 200:
-                await message.answer(f"✅ Токен для мастера ID `{master_id}` сохранён.\nТеперь уведомления о новых записях будут приходить в его бота.", parse_mode="Markdown")
-            else:
-                await message.answer(f"❌ Ошибка при сохранении токена. Проверь, что мастер с ID `{master_id}` существует.", parse_mode="Markdown")
-
-
-@dp.message(Command("set_avatar"))
-async def set_master_avatar(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
-        return
-    parts = message.text.split()
-    if len(parts) != 3:
-        await message.answer("❌ Формат: `/set_avatar ID_МАСТЕРА ССЫЛКА_НА_ФОТО`\n\nПример:\n`/set_avatar 1 https://example.com/avatar.jpg`", parse_mode="Markdown")
-        return
-    
-    master_id = parts[1]
-    photo_url = parts[2]
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.patch(f"{API_URL}/masters/{master_id}/avatar?photo_url={photo_url}") as resp:
-            if resp.status == 200:
-                await message.answer(f"✅ Аватар для мастера ID {master_id} сохранён")
-            else:
-                await message.answer("❌ Ошибка при сохранении аватара")
-
-
-@dp.message(Command("add_photo"))
-async def add_master_photo(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
-        return
-    parts = message.text.split()
-    if len(parts) != 3:
-        await message.answer("❌ Формат: `/add_photo ID_МАСТЕРА ССЫЛКА_НА_ФОТО`\n\nПример:\n`/add_photo 1 https://example.com/photo.jpg`", parse_mode="Markdown")
-        return
-    
-    master_id = parts[1]
-    photo_url = parts[2]
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post(f"{API_URL}/masters/{master_id}/photos", json={"photo": photo_url}) as resp:
-            if resp.status == 200:
-                await message.answer(f"✅ Фото добавлено мастеру ID {master_id}")
-            else:
-                await message.answer("❌ Ошибка при добавлении фото")
-
-
-@dp.message(Command("list_photos"))
-async def list_master_photos(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
-        return
-    parts = message.text.split()
-    if len(parts) != 2:
-        await message.answer("❌ Формат: `/list_photos ID_МАСТЕРА`", parse_mode="Markdown")
-        return
-    
-    master_id = parts[1]
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"{API_URL}/masters/{master_id}/photos") as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                photos = data.get("photos", [])
-                if not photos:
-                    await message.answer(f"📭 У мастера ID {master_id} нет фото")
+                masters = await resp.json()
+                if not masters:
+                    await callback.message.answer("📭 Нет мастеров в базе")
                 else:
-                    text = f"📸 *Фото мастера ID {master_id}:*\n\n"
-                    for i, photo in enumerate(photos):
-                        text += f"{i}. {photo}\n"
-                    await message.answer(text, parse_mode="Markdown")
+                    text = "📋 *Список мастеров:*\n\n"
+                    for m in masters:
+                        text += f"🆔 *ID:* {m['id']}\n"
+                        text += f"👤 *Имя:* {m['name']}\n"
+                        text += f"🤖 *Telegram ID:* {m.get('telegram_id') or '❌ не назначен'}\n"
+                        text += f"📞 *Телефон:* {m.get('phone') or '-'}\n"
+                        text += f"📷 *Instagram:* {m.get('instagram') or '-'}\n"
+                        text += f"🔤 *Иконка:* {m.get('icon') or '💅'}\n"
+                        text += "─" * 25 + "\n\n"
+                    
+                    if len(masters) > 10:
+                        text += f"\n📊 *Всего мастеров:* {len(masters)}"
+                    
+                    await callback.message.answer(text, parse_mode="Markdown")
             else:
-                await message.answer("❌ Ошибка при получении списка фото")
+                await callback.message.answer("❌ Ошибка загрузки списка мастеров")
+    await callback.answer()
 
 
-@dp.message(Command("del_photo"))
-async def delete_master_photo(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
-        return
+@dp.callback_query(F.data == "admin_set_telegram")
+async def admin_set_telegram_prompt(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "🔗 *Назначение Telegram ID мастеру*\n\n"
+        "Отправьте в формате:\n"
+        "`ID_МАСТЕРА TELEGRAM_ID`\n\n"
+        "Пример:\n"
+        "`1 123456789`\n\n"
+        "💡 *Как узнать Telegram ID:* напишите @userinfobot",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@dp.message(lambda msg: msg.text and len(msg.text.split()) == 2 and msg.from_user.id in ADMIN_IDS and msg.text.split()[0].isdigit())
+async def handle_set_telegram(message: types.Message):
     parts = message.text.split()
-    if len(parts) != 3:
-        await message.answer("❌ Формат: `/del_photo ID_МАСТЕРА ИНДЕКС_ФОТО`\n\nПример:\n`/del_photo 1 0` (удалит первое фото)", parse_mode="Markdown")
-        return
-    
-    master_id = parts[1]
-    photo_index = int(parts[2])
+    master_id = parts[0]
+    telegram_id = parts[1]
     
     async with aiohttp.ClientSession() as session:
-        async with session.delete(f"{API_URL}/masters/{master_id}/photos?index={photo_index}") as resp:
+        async with session.patch(f"{API_URL}/admin/set-telegram/{master_id}?telegram_id={telegram_id}") as resp:
             if resp.status == 200:
-                await message.answer(f"✅ Фото удалено у мастера ID {master_id}")
+                await message.answer(f"✅ Telegram ID `{telegram_id}` назначен мастеру ID {master_id}\n\n🎉 Теперь мастер может войти в свой кабинет через /start", parse_mode="Markdown")
             else:
-                await message.answer("❌ Ошибка при удалении фото")
+                await message.answer("❌ Ошибка при назначении Telegram ID")
 
 
-@dp.message(Command("add_promo"))
-async def add_promo(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
-        return
+@dp.callback_query(F.data == "admin_delete_master")
+async def admin_delete_master_prompt(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "❌ *Удаление мастера*\n\n"
+        "Отправьте ID мастера для удаления:\n"
+        "`ID`\n\n"
+        "Пример:\n"
+        "`1`\n\n"
+        "⚠️ *Внимание:* все записи и услуги мастера будут удалены!",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@dp.message(lambda msg: msg.text and msg.text.isdigit() and msg.from_user.id in ADMIN_IDS)
+async def handle_delete_master(message: types.Message):
+    master_id = message.text
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{API_URL}/admin/masters") as resp:
+            masters = await resp.json()
+            master_name = next((m.get("name") for m in masters if str(m.get("id")) == master_id), f"ID {master_id}")
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.delete(f"{API_URL}/admin/delete-master/{master_id}") as resp:
+            if resp.status == 200:
+                await message.answer(f"✅ Мастер *{master_name}* удалён", parse_mode="Markdown")
+            else:
+                await message.answer("❌ Ошибка при удалении мастера")
+
+
+@dp.callback_query(F.data == "admin_add_promo")
+async def admin_add_promo_prompt(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "🎫 *Создание промокода*\n\n"
+        "Отправьте в формате:\n"
+        "`КОД СКИДКА% ДНЕЙ`\n\n"
+        "Пример:\n"
+        "`SUMMER20 20 30`\n\n"
+        "Скидка в процентах, действует указанное количество дней.",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@dp.message(lambda msg: msg.text and len(msg.text.split()) == 3 and msg.from_user.id in ADMIN_IDS)
+async def handle_add_promo(message: types.Message):
     parts = message.text.split()
-    if len(parts) < 4:
-        await message.answer("❌ Формат: `/add_promo КОД СКИДКА% ДНЕЙ`\nПример: `/add_promo SUMMER20 20 30`", parse_mode="Markdown")
-        return
-
-    code = parts[1].upper()
-    discount = int(parts[2])
-    days = int(parts[3])
-
+    code = parts[0].upper()
+    discount = int(parts[1])
+    days = int(parts[2])
+    
     valid_until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-
-    async with aiohttp.ClientSession() as s:
-        async with s.post(f"{API_URL}/add-promo", json={"code": code, "discount_percent": discount, "valid_until": valid_until, "max_uses": 100}) as r:
-            if r.status == 200:
-                await message.answer(f"✅ Промокод `{code}` создан!\nСкидка {discount}% до {valid_until}", parse_mode="Markdown")
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{API_URL}/admin/add-promo", json={
+            "code": code,
+            "discount_percent": discount,
+            "valid_until": valid_until,
+            "max_uses": 100
+        }) as resp:
+            if resp.status == 200:
+                await message.answer(f"✅ Промокод `{code}` создан!\n🎁 Скидка {discount}% до {valid_until}", parse_mode="Markdown")
             else:
                 await message.answer("❌ Ошибка при создании промокода")
 
 
-@dp.message(Command("import_sheet"))
-async def import_from_google_sheets(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
-        return
+# ========== МАСТЕР-КОЛБЭКИ ==========
 
-    if not GOOGLE_CREDENTIALS_JSON or not SHEET_ID:
-        await message.answer("❌ Не настроены переменные GOOGLE_CREDENTIALS или SHEET_ID")
-        return
+@dp.callback_query(F.data == "share_master_link")
+async def share_master_link(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{API_URL}/masters/by_telegram/{user_id}") as resp:
+            if resp.status == 200:
+                master = await resp.json()
+                link = f"https://project-ev8r3.vercel.app/?id={master['id']}"
+                await callback.message.answer(
+                    f"🔗 *Ваша персональная ссылка:*\n"
+                    f"`{link}`\n\n"
+                    f"📤 Отправьте её клиентам — они сразу попадут на вашу страницу с услугами.\n\n"
+                    f"💡 *Совет:* добавьте ссылку в Instagram Bio или закрепите в Telegram!",
+                    parse_mode="Markdown"
+                )
+                await callback.answer()
+            else:
+                await callback.answer("❌ Ошибка: вы не зарегистрированы как мастер", show_alert=True)
 
-    await message.answer("🔄 Начинаю импорт мастеров из Google Таблицы...")
 
-    try:
-        creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
+# ========== ПРОВЕРКА ПОДПИСКИ ==========
 
-        sheet = client.open_by_key(SHEET_ID).sheet1
-        rows = sheet.get_all_records()
+@dp.callback_query(F.data == "check_sub")
+async def check_subscription_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    is_subscribed = await check_subscription(user_id)
+    
+    if is_subscribed:
+        await callback.message.delete()
+        await start(callback.message)
+        await callback.answer("✅ Спасибо за подписку!", show_alert=True)
+    else:
+        await callback.answer("❌ Ты ещё не подписан. Нажми на кнопку «Подписаться» и попробуй снова.", show_alert=True)
 
-        added = 0
-        errors = 0
 
-        for row in rows:
-            try:
-                if not row.get('name') or not row.get('address'):
-                    continue
+# ========== КОМАНДА ЗАКРЫТЬ ЧАТ ==========
 
-                master_data = {
-                    "name": row['name'],
-                    "address": row['address'],
-                    "lat": float(row.get('lat', 55.751244)),
-                    "lon": float(row.get('lon', 37.618423)),
-                    "phone": row.get('phone', ''),
-                    "instagram": row.get('instagram', ''),
-                    "description": row.get('description', ''),
-                    "services": row.get('services', '')
-                }
+@dp.message(Command("close_chat"))
+async def close_chat(message: types.Message):
+    await message.answer(
+        "💬 *Чат закрыт*\n\n"
+        "Чтобы начать новый чат, откройте ссылку из уведомления о записи.",
+        parse_mode="Markdown"
+    )
 
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(f"{API_URL}/masters", json=master_data) as resp:
-                        if resp.status == 200:
-                            added += 1
-                            logger.info(f"✅ Добавлен мастер: {row['name']}")
-                        else:
-                            errors += 1
-                            logger.error(f"❌ Ошибка добавления {row['name']}: {resp.status}")
-            except Exception as e:
-                errors += 1
-                logger.error(f"Ошибка в строке: {e}")
 
-        await message.answer(
-            f"✅ *Импорт завершён!*\n\n"
-            f"➕ Добавлено: `{added}`\n"
-            f"❌ Ошибок: `{errors}`",
-            parse_mode="Markdown"
-        )
-
-    except Exception as e:
-        logger.error(f"Ошибка импорта: {e}")
-        await message.answer(f"❌ Ошибка при импорте: {e}")
-
+# ========== ЗАПУСК ==========
 
 async def main():
-    logger.info("🚀 Бот администратора запущен")
+    logger.info("🚀 Бот запущен")
+    logger.info(f"Админы: {ADMIN_IDS}")
     await dp.start_polling(bot)
 
 
