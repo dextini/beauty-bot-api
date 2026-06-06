@@ -34,10 +34,14 @@ async def api_request(method: str, endpoint: str, data: dict = None):
                     return None
             elif method == "POST":
                 async with session.post(url, json=data) as resp:
-                    return await resp.json() if resp.status == 200 else None
+                    if resp.status == 200:
+                        return await resp.json()
+                    return None
             elif method == "PATCH":
                 async with session.patch(url, json=data) as resp:
-                    return await resp.json() if resp.status == 200 else None
+                    if resp.status == 200:
+                        return await resp.json()
+                    return None
             elif method == "DELETE":
                 async with session.delete(url) as resp:
                     return resp.status == 200
@@ -259,23 +263,23 @@ async def handle_add_master(message: types.Message):
 
 @dp.callback_query(F.data == "admin_list_masters")
 async def admin_list_masters(callback: types.CallbackQuery):
-    masters = await api_request("GET", "/admin/masters")
+    # Используем существующий эндпоинт /masters
+    masters = await api_request("GET", "/masters")
     
     if not masters:
         await callback.message.answer("📭 Нет мастеров в базе", reply_markup=back_to_admin())
     else:
         text = "📋 *Список мастеров:*\n\n"
         for m in masters[:15]:  # Показываем первые 15
-            text += f"🆔 *ID:* `{m['id']}`\n"
-            text += f"👤 *Имя:* {m['name']}\n"
+            text += f"🆔 *ID:* `{m.get('id', '?')}`\n"
+            text += f"👤 *Имя:* {m.get('name', '?')}\n"
             text += f"🤖 *Telegram ID:* {m.get('telegram_id') or '❌ не назначен'}\n"
-            text += f"📞 *Телефон:* {m.get('phone') or '-'}\n"
-            text += f"📷 *Instagram:* {m.get('instagram') or '-'}\n"
+            text += f"⭐ *Рейтинг:* {m.get('rating', '0')}\n"
+            text += f"✅ *Записей:* {m.get('completed_bookings', 0)}\n"
             text += "─" * 25 + "\n\n"
         
         if len(masters) > 15:
             text += f"\n📊 *Всего мастеров:* {len(masters)}\n"
-            text += f"💡 Для полного списка используйте API"
         
         await callback.message.answer(text, parse_mode="Markdown", reply_markup=back_to_admin())
     
@@ -283,14 +287,28 @@ async def admin_list_masters(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "admin_set_telegram")
 async def admin_set_telegram_prompt(callback: types.CallbackQuery):
+    # Сначала показываем список мастеров без Telegram ID
+    masters = await api_request("GET", "/masters")
+    if masters:
+        no_telegram = [m for m in masters if not m.get('telegram_id')]
+        if no_telegram:
+            hint = "📋 *Мастера без Telegram ID:*\n"
+            for m in no_telegram[:5]:
+                hint += f"🆔 ID: `{m.get('id')}` — {m.get('name')}\n"
+            hint += "\n"
+        else:
+            hint = "✅ У всех мастеров назначен Telegram ID\n\n"
+    else:
+        hint = ""
+    
     await callback.message.answer(
-        "🔗 *Назначение Telegram ID мастеру*\n\n"
-        "Отправьте в формате:\n"
-        "`ID_МАСТЕРА TELEGRAM_ID`\n\n"
-        "Пример:\n"
-        "`1 123456789`\n\n"
-        "💡 *Как узнать Telegram ID:* напишите @userinfobot\n\n"
-        "📋 Список ID мастеров можно посмотреть в «Список мастеров»",
+        f"🔗 *Назначение Telegram ID мастеру*\n\n"
+        f"{hint}"
+        f"Отправьте в формате:\n"
+        f"`ID_МАСТЕРА TELEGRAM_ID`\n\n"
+        f"Пример:\n"
+        f"`1 123456789`\n\n"
+        f"💡 *Как узнать Telegram ID:* напишите @userinfobot",
         parse_mode="Markdown",
         reply_markup=back_to_admin()
     )
@@ -302,7 +320,8 @@ async def handle_set_telegram(message: types.Message):
     master_id = parts[0]
     telegram_id = parts[1]
     
-    result = await api_request("PATCH", f"/admin/set-telegram/{master_id}", {"telegram_id": telegram_id})
+    # Обновляем telegram_id мастера
+    result = await api_request("PATCH", f"/masters/{master_id}/telegram", {"telegram_id": telegram_id})
     
     if result:
         await message.answer(
@@ -311,7 +330,11 @@ async def handle_set_telegram(message: types.Message):
             parse_mode="Markdown"
         )
     else:
-        await message.answer("❌ Ошибка при назначении Telegram ID. Проверьте, существует ли мастер с таким ID.")
+        await message.answer(
+            f"❌ Ошибка при назначении Telegram ID.\n\n"
+            f"Проверьте, существует ли мастер с ID {master_id}.\n"
+            f"Список ID можно посмотреть в «Список мастеров»."
+        )
 
 @dp.callback_query(F.data == "admin_edit_services")
 async def admin_edit_services_prompt(callback: types.CallbackQuery):
@@ -394,11 +417,11 @@ async def admin_delete_master_prompt(callback: types.CallbackQuery):
 async def handle_delete_master(message: types.Message):
     master_id = int(message.text)
     
-    # Получаем имя мастера
-    masters = await api_request("GET", "/admin/masters")
+    # Получаем имя мастера из /masters
+    masters = await api_request("GET", "/masters")
     master_name = next((m.get("name") for m in masters if m.get("id") == master_id), f"ID {master_id}")
     
-    success = await api_request("DELETE", f"/admin/delete-master/{master_id}")
+    success = await api_request("DELETE", f"/masters/{master_id}")
     
     if success:
         await message.answer(f"✅ Мастер *{master_name}* удалён", parse_mode="Markdown")
@@ -449,7 +472,7 @@ async def handle_add_promo(message: types.Message):
 
 @dp.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: types.CallbackQuery):
-    masters = await api_request("GET", "/admin/masters") or []
+    masters = await api_request("GET", "/masters") or []
     masters_count = len(masters)
     
     # Получаем статистику по записям
@@ -620,7 +643,7 @@ async def check_subscription_callback(callback: types.CallbackQuery):
         await callback.answer("❌ Ты ещё не подписан. Нажми на кнопку «Подписаться» и попробуй снова.", show_alert=True)
 
 
-# ========== КОМАНДА ЗАКРЫТЬ ЧАТ ==========
+# ========== КОМАНДЫ ==========
 
 @dp.message(Command("close_chat"))
 async def close_chat(message: types.Message):
@@ -630,9 +653,6 @@ async def close_chat(message: types.Message):
         "📍 Основное меню: /start",
         parse_mode="Markdown"
     )
-
-
-# ========== КОМАНДА АДМИН ==========
 
 @dp.message(Command("admin"))
 async def admin_command(message: types.Message):
