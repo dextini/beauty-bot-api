@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
-PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN", "твой_платежный_токен_из_юкассы")  # 👈 ЗАМЕНИ!
+PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN", "live_6Up436nmim-lFT8x7PV84HHsiUwEzxLMZOrmwPy5FEk")  # 👈 ЗАМЕНИ!
 API_URL = os.getenv("API_URL", "https://intuitive-fascination-production-ce82.up.railway.app")
 CHANNEL_USERNAME = "@pinkspotnews"
 COMMISSION_PERCENT = 7
