@@ -2,17 +2,20 @@ import asyncio
 import logging
 import os
 import aiohttp
+import json
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import WebAppInfo, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import WebAppInfo, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, PreCheckoutQuery, SuccessfulPayment
 from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
+PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN", "твой_платежный_токен_из_юкассы")  # 👈 ЗАМЕНИ НА СВОЙ ТОКЕН!
 API_URL = os.getenv("API_URL", "https://intuitive-fascination-production-ce82.up.railway.app")
 CHANNEL_USERNAME = "@pinkspotnews"
+COMMISSION_PERCENT = 7  # Фиксированная комиссия 7%
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -129,21 +132,6 @@ async def start(message: types.Message):
                     await message.answer("❌ Чат не найден или устарел")
         return
     
-    # Обработка оплаты
-    if text.startswith("/start pay_"):
-        payment_id = text.replace("/start pay_", "")
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f"{API_URL}/payment-callback", json={"payment_id": payment_id}) as resp:
-                if resp.status == 200:
-                    await message.answer(
-                        "✅ *Оплата подтверждена!*\n\n"
-                        "Ваша запись подтверждена, и чат с мастером открыт.",
-                        parse_mode="Markdown"
-                    )
-                else:
-                    await message.answer("❌ Ошибка подтверждения оплаты")
-        return
-    
     # Проверка подписки на канал
     is_subscribed = await check_subscription(user_id)
     if not is_subscribed:
@@ -201,6 +189,117 @@ async def start(message: types.Message):
         parse_mode="Markdown",
         reply_markup=client_keyboard()
     )
+
+
+# ========== НАТИВНАЯ ОПЛАТА ЧЕРЕЗ ЮKASSA ==========
+
+@dp.callback_query(F.data.startswith("pay_commission_"))
+async def handle_pay_commission(callback: types.CallbackQuery):
+    """Обработка нажатия на кнопку оплаты комиссии (вызывается из веб-приложения)"""
+    booking_id = int(callback.data.split("_")[2])
+    
+    # Получаем информацию о бронировании через API
+    booking = await api_request("GET", f"/bookings/client/{callback.from_user.id}")
+    if not booking:
+        await callback.answer("❌ Запись не найдена", show_alert=True)
+        return
+    
+    target_booking = None
+    for b in booking:
+        if b.get("id") == booking_id:
+            target_booking = b
+            break
+    
+    if not target_booking:
+        await callback.answer("❌ Запись не найдена", show_alert=True)
+        return
+    
+    commission_amount = target_booking.get("commission_amount", 0)
+    service_name = target_booking.get("service_name", "Услуга")
+    
+    if commission_amount <= 0:
+        await callback.answer("✅ Комиссия уже оплачена", show_alert=True)
+        return
+    
+    # Сумма в копейках (Telegram требует копейки)
+    amount_kopecks = int(commission_amount * 100)
+    
+    # Данные для чека (provider_data)
+    provider_data = {
+        "receipt": {
+            "items": [{
+                "description": f"Комиссия Beauty Map ({COMMISSION_PERCENT}%) за запись: {service_name}",
+                "quantity": "1.00",
+                "amount": {
+                    "value": f"{commission_amount:.2f}",
+                    "currency": "RUB"
+                },
+                "vat_code": 1,
+                "payment_mode": "full_payment",
+                "payment_subject": "service"
+            }],
+            "customer": {
+                "email": f"user_{callback.from_user.id}@beauty-map.ru"
+            }
+        }
+    }
+    
+    try:
+        await bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title=f"💸 Комиссия Beauty Map",
+            description=f"Комиссия {COMMISSION_PERCENT}% за запись: {service_name}",
+            payload=f"commission_{booking_id}",
+            provider_token=PROVIDER_TOKEN,
+            currency="RUB",
+            prices=[LabeledPrice(label="Комиссия сервиса", amount=amount_kopecks)],
+            need_email=True,
+            send_email_to_provider=True,
+            provider_data=json.dumps(provider_data)
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка отправки инвойса: {e}")
+        await callback.answer(f"❌ Ошибка: {str(e)[:100]}", show_alert=True)
+
+@dp.pre_checkout_query()
+async def pre_checkout_query_handler(pre_checkout_q: PreCheckoutQuery):
+    """Обработка предварительного запроса перед оплатой (обязательно ответить в течение 10 секунд)"""
+    logger.info(f"PreCheckoutQuery получен: {pre_checkout_q.id}")
+    
+    # Обязательно отвечаем в течение 10 секунд!
+    await bot.answer_pre_checkout_query(
+        pre_checkout_query_id=pre_checkout_q.id,
+        ok=True
+    )
+
+@dp.message(lambda message: message.successful_payment is not None)
+async def successful_payment_handler(message: types.Message):
+    """Обработка успешного платежа"""
+    payment = message.successful_payment
+    payload = payment.invoice_payload
+    telegram_payment_charge_id = payment.telegram_payment_charge_id
+    provider_payment_charge_id = payment.provider_payment_charge_id
+    
+    logger.info(f"Успешный платеж: {telegram_payment_charge_id}")
+    
+    # Парсим payload (commission_123)
+    if payload.startswith("commission_"):
+        booking_id = int(payload.split("_")[1])
+        
+        # Обновляем статус платежа в БД через API
+        result = await api_request("POST", "/payment-callback", {
+            "payment_id": provider_payment_charge_id,
+            "booking_id": booking_id
+        })
+        
+        await message.answer(
+            f"✅ *Оплата прошла успешно!*\n\n"
+            f"Ваша запись подтверждена. Чат с мастером открыт.\n\n"
+            f"📄 ID платежа: `{telegram_payment_charge_id}`\n\n"
+            f"💬 Чат с мастером будет доступен в разделе «Записи».",
+            parse_mode="Markdown"
+        )
 
 
 # ========== АДМИН-КОЛБЭКИ ==========
@@ -263,14 +362,13 @@ async def handle_add_master(message: types.Message):
 
 @dp.callback_query(F.data == "admin_list_masters")
 async def admin_list_masters(callback: types.CallbackQuery):
-    # Используем существующий эндпоинт /masters
     masters = await api_request("GET", "/masters")
     
     if not masters:
         await callback.message.answer("📭 Нет мастеров в базе", reply_markup=back_to_admin())
     else:
         text = "📋 *Список мастеров:*\n\n"
-        for m in masters[:15]:  # Показываем первые 15
+        for m in masters[:15]:
             text += f"🆔 *ID:* `{m.get('id', '?')}`\n"
             text += f"👤 *Имя:* {m.get('name', '?')}\n"
             text += f"🤖 *Telegram ID:* {m.get('telegram_id') or '❌ не назначен'}\n"
@@ -287,7 +385,6 @@ async def admin_list_masters(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "admin_set_telegram")
 async def admin_set_telegram_prompt(callback: types.CallbackQuery):
-    # Сначала показываем список мастеров без Telegram ID
     masters = await api_request("GET", "/masters")
     if masters:
         no_telegram = [m for m in masters if not m.get('telegram_id')]
@@ -320,7 +417,6 @@ async def handle_set_telegram(message: types.Message):
     master_id = parts[0]
     telegram_id = parts[1]
     
-    # Обновляем telegram_id мастера
     result = await api_request("PATCH", f"/masters/{master_id}/telegram", {"telegram_id": telegram_id})
     
     if result:
@@ -364,7 +460,6 @@ async def handle_edit_services(message: types.Message):
     rest = parts[1]
     
     if "DELETE" in rest.upper():
-        # Удаление услуги
         service_name = rest.replace("DELETE", "").strip()
         result = await api_request("DELETE", f"/master/{master_id}/services", {"name": service_name})
         if result:
@@ -372,7 +467,6 @@ async def handle_edit_services(message: types.Message):
         else:
             await message.answer("❌ Ошибка при удалении услуги")
     else:
-        # Добавление/обновление услуги
         service_parts = rest.split(" | ")
         if len(service_parts) < 3:
             await message.answer("❌ Неверный формат. Используйте: `Название | Цена | Длительность`")
@@ -417,7 +511,6 @@ async def admin_delete_master_prompt(callback: types.CallbackQuery):
 async def handle_delete_master(message: types.Message):
     master_id = int(message.text)
     
-    # Получаем имя мастера из /masters
     masters = await api_request("GET", "/masters")
     master_name = next((m.get("name") for m in masters if m.get("id") == master_id), f"ID {master_id}")
     
@@ -475,7 +568,6 @@ async def admin_stats(callback: types.CallbackQuery):
     masters = await api_request("GET", "/masters") or []
     masters_count = len(masters)
     
-    # Получаем статистику по записям
     all_bookings = []
     for master in masters:
         bookings = await api_request("GET", f"/bookings/master/{master['id']}") or []
@@ -489,7 +581,8 @@ async def admin_stats(callback: types.CallbackQuery):
     text += f"👨‍💼 *Мастеров:* {masters_count}\n"
     text += f"📅 *Всего записей:* {bookings_count}\n"
     text += f"✅ *Подтверждённых:* {len(confirmed_bookings)}\n"
-    text += f"💰 *Выручка:* {total_revenue} ₽\n\n"
+    text += f"💰 *Выручка:* {total_revenue} ₽\n"
+    text += f"💸 *Комиссия сервиса:* {COMMISSION_PERCENT}%\n\n"
     
     if masters_count > 0:
         text += f"📈 *Средняя выручка на мастера:* {total_revenue // masters_count} ₽"
@@ -668,6 +761,7 @@ async def main():
     logger.info("🚀 Бот запущен")
     logger.info(f"👑 Админы: {ADMIN_IDS}")
     logger.info(f"🌐 API URL: {API_URL}")
+    logger.info(f"💸 Комиссия: {COMMISSION_PERCENT}%")
     await dp.start_polling(bot)
 
 
