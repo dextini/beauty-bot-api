@@ -15,8 +15,8 @@ from datetime import datetime, timedelta
 app = FastAPI(title="Beauty Bot API")
 
 # ========== НАСТРОЙКИ ЮKASSA ==========
-YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "ТВОЙ_SHOP_ID")
-YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "ТВОЙ_SECRET_KEY")
+YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1368786")
+YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "live_6Up436nmim-lFT8x7PV84HHsiUwEzxLMZOrmwPy5FEk")
 YKASSA_API_URL = "https://api.yookassa.ru/v3/payments"
 
 # ========== КОМИССИЯ (ФИКСИРОВАННАЯ 7%) ==========
