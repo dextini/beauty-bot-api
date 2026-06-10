@@ -162,11 +162,9 @@ def migrate_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Получаем список существующих колонок в таблице bookings
     c.execute("PRAGMA table_info(bookings)")
     existing_columns = [col[1] for col in c.fetchall()]
     
-    # Колонки, которые должны быть
     required_columns = {
         "deposit_amount": "REAL DEFAULT 0",
         "payment_id": "TEXT",
@@ -183,7 +181,6 @@ def migrate_db():
             except Exception as e:
                 logger.warning(f"Не удалось добавить {col_name}: {e}")
     
-    # Аналогично для таблицы masters
     c.execute("PRAGMA table_info(masters)")
     master_columns = [col[1] for col in c.fetchall()]
     
@@ -211,7 +208,6 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    # Таблица мастеров
     c.execute("""
         CREATE TABLE IF NOT EXISTS masters (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -234,7 +230,6 @@ def init_db():
         )
     """)
 
-    # Таблица услуг
     c.execute("""
         CREATE TABLE IF NOT EXISTS services (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -246,7 +241,6 @@ def init_db():
         )
     """)
 
-    # Таблица записей
     c.execute("""
         CREATE TABLE IF NOT EXISTS bookings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -271,7 +265,6 @@ def init_db():
         )
     """)
 
-    # Таблица выходных дней
     c.execute("""
         CREATE TABLE IF NOT EXISTS days_off (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -282,7 +275,6 @@ def init_db():
         )
     """)
 
-    # Таблица чатов
     c.execute("""
         CREATE TABLE IF NOT EXISTS chats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -297,7 +289,6 @@ def init_db():
         )
     """)
 
-    # Таблица отзывов
     c.execute("""
         CREATE TABLE IF NOT EXISTS reviews (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -313,7 +304,6 @@ def init_db():
         )
     """)
 
-    # Таблица пользователей
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -324,7 +314,6 @@ def init_db():
         )
     """)
 
-    # Таблица платежей
     c.execute("""
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -339,7 +328,6 @@ def init_db():
         )
     """)
 
-    # Таблица сообщений чата
     c.execute("""
         CREATE TABLE IF NOT EXISTS chat_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -358,10 +346,7 @@ def init_db():
     conn.close()
     logger.info("✅ Таблицы БД созданы")
 
-    # Запускаем миграцию для добавления недостающих колонок
     migrate_db()
-
-    # Заполняем тестовыми данными, если пусто
     fill_test_data()
 
 def fill_test_data():
@@ -467,8 +452,21 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
     
     logger.info(f"✅ Booking {booking_id} confirmed")
 
+# ========== ГЛАВНАЯ ФУНКЦИЯ ПЛАТЕЖА С ТЕСТОВЫМ РЕЖИМОМ ==========
 async def create_ykassa_payment(amount: float, description: str, return_url: str, booking_id: int) -> dict:
     """Создание платежа в ЮKassa"""
+    
+    # 🔥 ТЕСТОВЫЙ РЕЖИМ - ВРЕМЕННО 🔥
+    TEST_MODE = True  # <--- ПОСТАВЬ False когда заработает
+    
+    if TEST_MODE:
+        logger.info(f"🧪 ТЕСТОВЫЙ РЕЖИМ: платёж на {amount}₽, booking_id={booking_id}")
+        # Открываем Яндекс для проверки
+        return {
+            "confirmation_url": "https://yandex.ru",
+            "payment_id": f"test_{booking_id}"
+        }
+    
     if not YKASSA_SHOP_ID or not YKASSA_SECRET_KEY:
         logger.warning("ЮKassa не настроена, тестовый режим")
         return {
@@ -503,7 +501,6 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
             
             if response.status_code == 200:
                 data = response.json()
-                # Получаем URL для оплаты
                 if "confirmation" in data and "confirmation_url" in data["confirmation"]:
                     payment_url = data["confirmation"]["confirmation_url"]
                 elif "confirmation_url" in data:
@@ -516,8 +513,7 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
                     "payment_id": data.get("id", f"pay_{booking_id}")
                 }
             else:
-                error_text = response.text
-                logger.error(f"ЮKassa ошибка {response.status_code}: {error_text}")
+                logger.error(f"ЮKassa ошибка {response.status_code}: {response.text}")
                 return {
                     "confirmation_url": f"https://t.me/pinkspotvelur_bot?booking_id={booking_id}",
                     "payment_id": f"error_{booking_id}"
