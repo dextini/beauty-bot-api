@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import sqlite3
@@ -8,7 +9,8 @@ import httpx
 import json
 import secrets
 from datetime import datetime, timedelta
-from fastapi.responses import JSONResponse
+import base64
+import re
 
 app = FastAPI(title="Beauty Bot API")
 
@@ -54,6 +56,11 @@ class ServiceOut(BaseModel):
     price: int
     duration_min: int
 
+class ServiceIn(BaseModel):
+    name: str
+    price: int
+    duration_min: int
+
 class MasterOut(BaseModel):
     id: int
     name: str
@@ -73,6 +80,20 @@ class MasterOut(BaseModel):
     work_start: Optional[str] = "09:00"
     work_end: Optional[str] = "20:00"
     icon: Optional[str] = "💅"
+    completed_bookings: Optional[int] = 0
+
+class MasterIn(BaseModel):
+    name: str
+    address: str
+    lat: Optional[float] = 47.222078
+    lon: Optional[float] = 39.720358
+    phone: Optional[str] = ""
+    instagram: Optional[str] = ""
+    description: Optional[str] = ""
+    icon: Optional[str] = "💅"
+    telegram_id: Optional[str] = None
+    work_start: Optional[str] = "09:00"
+    work_end: Optional[str] = "20:00"
 
 class BookingIn(BaseModel):
     master_id: int
@@ -82,6 +103,53 @@ class BookingIn(BaseModel):
     client_phone: Optional[str]
     date: str
     time: str
+
+class BookingStatusUpdate(BaseModel):
+    status: str
+
+class PaymentCreate(BaseModel):
+    booking_id: int
+
+class PaymentCallback(BaseModel):
+    payment_id: str
+    status: str = "paid"
+
+class MessageIn(BaseModel):
+    booking_id: int
+    from_id: str
+    to_id: str
+    message: Optional[str] = None
+    photo_url: Optional[str] = None
+
+class ReviewIn(BaseModel):
+    master_id: int
+    booking_id: int
+    client_name: str
+    rating: int
+    comment: Optional[str] = None
+
+class ReviewReply(BaseModel):
+    reply: str
+
+class LocationUpdate(BaseModel):
+    lat: float
+    lon: float
+
+class WorkHoursUpdate(BaseModel):
+    work_start: str
+    work_end: str
+
+class BotTokenUpdate(BaseModel):
+    bot_token: str
+
+class IconUpdate(BaseModel):
+    icon: str
+
+class TelegramIdUpdate(BaseModel):
+    telegram_id: str
+
+class UserRegister(BaseModel):
+    telegram_id: str
 
 # ========== ИНИЦИАЛИЗАЦИЯ БД ==========
 def init_db():
@@ -351,6 +419,86 @@ def get_master_by_telegram(telegram_id: str, conn: sqlite3.Connection = Depends(
         raise HTTPException(status_code=404, detail="Master not found")
     return dict(master)
 
+@app.post("/masters")
+def add_master(master: MasterIn, conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute(
+        """INSERT INTO masters (name, address, lat, lon, phone, instagram, description, icon, telegram_id, work_start, work_end, registered_at) 
+           VALUES (?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)""",
+        (master.name, master.address, master.lat, master.lon, master.phone, master.instagram, master.description, master.icon, master.telegram_id, master.work_start, master.work_end)
+    )
+    conn.commit()
+    return {"status": "ok", "message": f"Master {master.name} added"}
+
+@app.delete("/masters/{master_id}")
+def delete_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id, name FROM masters WHERE id = ?", (master_id,)).fetchone()
+    if not master:
+        raise HTTPException(status_code=404, detail="Master not found")
+    
+    conn.execute("DELETE FROM services WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM bookings WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM days_off WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM reviews WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM masters WHERE id = ?", (master_id,))
+    conn.commit()
+    return {"status": "ok", "message": f"Master {master_id} deleted"}
+
+@app.patch("/masters/{master_id}/telegram")
+def set_master_telegram(master_id: int, data: TelegramIdUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+    if not master:
+        raise HTTPException(status_code=404, detail="Master not found")
+    
+    conn.execute("UPDATE masters SET telegram_id = ? WHERE id = ?", (data.telegram_id, master_id))
+    conn.commit()
+    return {"status": "ok", "message": f"Telegram ID {data.telegram_id} assigned"}
+
+@app.patch("/masters/{master_id}/bot-token")
+def set_master_bot_token(master_id: int, data: BotTokenUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+    if not master:
+        raise HTTPException(status_code=404, detail="Master not found")
+    
+    conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (data.bot_token, master_id))
+    conn.commit()
+    return {"status": "ok", "message": "Bot token saved"}
+
+@app.patch("/masters/{master_id}/icon")
+def set_master_icon(master_id: int, data: IconUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+    if not master:
+        raise HTTPException(status_code=404, detail="Master not found")
+    
+    conn.execute("UPDATE masters SET icon = ? WHERE id = ?", (data.icon, master_id))
+    conn.commit()
+    return {"status": "ok", "message": "Icon saved"}
+
+@app.patch("/master/{telegram_id}/location")
+def update_master_location(telegram_id: str, data: LocationUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    
+    conn.execute(
+        "UPDATE masters SET lat = ?, lon = ? WHERE id = ?",
+        (data.lat, data.lon, master["id"])
+    )
+    conn.commit()
+    return {"status": "ok", "message": "Location updated"}
+
+@app.patch("/master/{telegram_id}/work-hours")
+def update_work_hours(telegram_id: str, data: WorkHoursUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    
+    conn.execute(
+        "UPDATE masters SET work_start = ?, work_end = ? WHERE id = ?",
+        (data.work_start, data.work_end, master["id"])
+    )
+    conn.commit()
+    return {"status": "ok"}
+
 @app.get("/masters/{master_id}/slots")
 def get_free_slots(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
@@ -393,84 +541,6 @@ def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends
     conn.commit()
     return {"status": "ok", "date": date}
 
-# ========== ЭНДПОИНТЫ ДЛЯ ЛОКАЦИИ ==========
-
-@app.patch("/master/{telegram_id}/location")
-def update_master_location(telegram_id: str, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
-    if not master:
-        raise HTTPException(404, "Master not found")
-    
-    conn.execute(
-        "UPDATE masters SET lat = ?, lon = ? WHERE id = ?",
-        (data["lat"], data["lon"], master["id"])
-    )
-    conn.commit()
-    return {"status": "ok", "message": "Location updated"}
-
-@app.patch("/masters/{master_id}/telegram")
-def set_master_telegram(master_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
-    if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
-    
-    telegram_id = data.get("telegram_id")
-    conn.execute("UPDATE masters SET telegram_id = ? WHERE id = ?", (telegram_id, master_id))
-    conn.commit()
-    return {"status": "ok", "message": f"Telegram ID {telegram_id} assigned"}
-
-@app.delete("/masters/{master_id}")
-def delete_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id, name FROM masters WHERE id = ?", (master_id,)).fetchone()
-    if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
-    
-    conn.execute("DELETE FROM services WHERE master_id = ?", (master_id,))
-    conn.execute("DELETE FROM bookings WHERE master_id = ?", (master_id,))
-    conn.execute("DELETE FROM days_off WHERE master_id = ?", (master_id,))
-    conn.execute("DELETE FROM reviews WHERE master_id = ?", (master_id,))
-    conn.execute("DELETE FROM masters WHERE id = ?", (master_id,))
-    conn.commit()
-    return {"status": "ok", "message": f"Master {master_id} deleted"}
-
-@app.post("/masters")
-def add_master(master: dict, conn: sqlite3.Connection = Depends(get_db)):
-    if not master.get("name") or not master.get("address"):
-        raise HTTPException(status_code=400, detail="Missing name or address")
-    
-    conn.execute(
-        """INSERT INTO masters (name, address, lat, lon, phone, instagram, description, icon, registered_at) 
-           VALUES (?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)""",
-        (master["name"], master["address"], 
-         master.get("lat", 47.222078), master.get("lon", 39.720358),
-         master.get("phone"), master.get("instagram"), master.get("description"),
-         master.get("icon", "💅"))
-    )
-    conn.commit()
-    return {"status": "ok", "message": "Master added"}
-
-@app.patch("/masters/{master_id}/bot-token")
-def set_master_bot_token(master_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
-    if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
-    
-    bot_token = data.get("bot_token")
-    conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (bot_token, master_id))
-    conn.commit()
-    return {"status": "ok", "message": "Bot token saved"}
-
-@app.patch("/masters/{master_id}/icon")
-def set_master_icon(master_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
-    if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
-    
-    icon = data.get("icon", "💅")
-    conn.execute("UPDATE masters SET icon = ? WHERE id = ?", (icon, master_id))
-    conn.commit()
-    return {"status": "ok", "message": "Icon saved"}
-
 # ========== ЭНДПОИНТЫ ДЛЯ УСЛУГ ==========
 
 @app.get("/master/{telegram_id}/services")
@@ -483,17 +553,17 @@ def get_master_services(telegram_id: str, conn: sqlite3.Connection = Depends(get
     return [dict(s) for s in services]
 
 @app.post("/master/{telegram_id}/services")
-def add_master_service(telegram_id: str, data: dict, conn: sqlite3.Connection = Depends(get_db)):
+def add_master_service(telegram_id: str, data: ServiceIn, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
     
     conn.execute(
         "INSERT INTO services (master_id, name, price, duration_min) VALUES (?, ?, ?, ?)",
-        (master["id"], data["name"], data["price"], data["duration"])
+        (master["id"], data.name, data.price, data.duration_min)
     )
     conn.commit()
-    return {"status": "ok"}
+    return {"status": "ok", "service_id": conn.execute("SELECT last_insert_rowid()").fetchone()[0]}
 
 @app.delete("/master/{telegram_id}/services/{service_id}")
 def delete_master_service(telegram_id: str, service_id: int, conn: sqlite3.Connection = Depends(get_db)):
@@ -505,92 +575,58 @@ def delete_master_service(telegram_id: str, service_id: int, conn: sqlite3.Conne
     conn.commit()
     return {"status": "ok"}
 
-@app.post("/master/{master_id}/services")
-def add_service_to_master(master_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
-    if not master:
-        raise HTTPException(404, "Master not found")
-    
-    conn.execute(
-        "INSERT INTO services (master_id, name, price, duration_min) VALUES (?, ?, ?, ?)",
-        (master_id, data["name"], data["price"], data["duration_min"])
-    )
-    conn.commit()
-    return {"status": "ok", "message": "Service added"}
+# ========== ЭНДПОИНТЫ ДЛЯ ФОТОГРАФИЙ ==========
 
-@app.delete("/master/{master_id}/services/{service_id}")
-def delete_service_from_master(master_id: int, service_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("DELETE FROM services WHERE id = ? AND master_id = ?", (service_id, master_id))
-    conn.commit()
-    return {"status": "ok", "message": "Service deleted"}
-
-# ========== ЭНДПОИНТЫ ДЛЯ РАБОЧЕГО ВРЕМЕНИ ==========
-
-@app.patch("/master/{telegram_id}/work-hours")
-def update_work_hours(telegram_id: str, data: dict, conn: sqlite3.Connection = Depends(get_db)):
+@app.post("/master/{telegram_id}/avatar")
+def upload_master_avatar(telegram_id: str, photo_url: str = Form(...), conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
     
-    conn.execute(
-        "UPDATE masters SET work_start = ?, work_end = ? WHERE id = ?",
-        (data["work_start"], data["work_end"], master["id"])
-    )
+    conn.execute("UPDATE masters SET photo_url = ? WHERE id = ?", (photo_url, master["id"]))
     conn.commit()
-    return {"status": "ok"}
+    return {"status": "ok", "message": "Avatar updated"}
 
-# ========== ЭНДПОИНТЫ ДЛЯ ФОТО ==========
-
-@app.post("/masters/{master_id}/photos")
-def add_master_photo(master_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+@app.post("/master/{telegram_id}/photos")
+def add_master_photo(telegram_id: str, photo_url: str = Form(...), conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
     if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
+        raise HTTPException(404, "Master not found")
     
-    current = conn.execute("SELECT photos FROM masters WHERE id = ?", (master_id,)).fetchone()
+    current = conn.execute("SELECT photos FROM masters WHERE id = ?", (master["id"],)).fetchone()
     photos = json.loads(current["photos"]) if current["photos"] else []
-    photos.append(data["photo"])
+    photos.append(photo_url)
     
-    conn.execute("UPDATE masters SET photos = ? WHERE id = ?", (json.dumps(photos), master_id))
+    conn.execute("UPDATE masters SET photos = ? WHERE id = ?", (json.dumps(photos), master["id"]))
     conn.commit()
     return {"status": "ok", "photos": photos}
 
-@app.delete("/masters/{master_id}/photos")
-def delete_master_photo(master_id: int, index: int, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+@app.delete("/master/{telegram_id}/photos")
+def delete_master_photo(telegram_id: str, index: int, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
     if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
+        raise HTTPException(404, "Master not found")
     
-    current = conn.execute("SELECT photos FROM masters WHERE id = ?", (master_id,)).fetchone()
+    current = conn.execute("SELECT photos FROM masters WHERE id = ?", (master["id"],)).fetchone()
     photos = json.loads(current["photos"]) if current["photos"] else []
     
     if index < 0 or index >= len(photos):
         raise HTTPException(status_code=400, detail="Invalid photo index")
     
     photos.pop(index)
-    conn.execute("UPDATE masters SET photos = ? WHERE id = ?", (json.dumps(photos), master_id))
+    conn.execute("UPDATE masters SET photos = ? WHERE id = ?", (json.dumps(photos), master["id"]))
     conn.commit()
     return {"status": "ok", "photos": photos}
 
-@app.get("/masters/{master_id}/photos")
-def get_master_photos(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+@app.get("/master/{telegram_id}/photos")
+def get_master_photos(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
     if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
+        raise HTTPException(404, "Master not found")
     
-    current = conn.execute("SELECT photos FROM masters WHERE id = ?", (master_id,)).fetchone()
+    current = conn.execute("SELECT photos FROM masters WHERE id = ?", (master["id"],)).fetchone()
     photos = json.loads(current["photos"]) if current["photos"] else []
     return {"photos": photos}
-
-@app.patch("/masters/{master_id}/avatar")
-def set_master_avatar(master_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
-    if not master:
-        raise HTTPException(status_code=404, detail="Master not found")
-    
-    conn.execute("UPDATE masters SET photo_url = ? WHERE id = ?", (data["photo_url"], master_id))
-    conn.commit()
-    return {"status": "ok", "message": "Avatar saved"}
 
 # ========== ОСНОВНОЙ ЭНДПОИНТ ДЛЯ ЗАПИСИ ==========
 
@@ -644,66 +680,6 @@ async def create_booking(data: BookingIn):
     finally:
         conn.close()
 
-# ========== ПЛАТЕЖИ (ДЕПОЗИТ 5%) ==========
-
-@app.post("/create-payment")
-def create_payment(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    booking_id = data["booking_id"]
-    
-    booking = conn.execute("""
-        SELECT b.*, s.price, m.name as master_name
-        FROM bookings b 
-        JOIN services s ON b.service_id = s.id
-        JOIN masters m ON b.master_id = m.id
-        WHERE b.id = ?
-    """, (booking_id,)).fetchone()
-    
-    if not booking:
-        raise HTTPException(404, "Booking not found")
-    
-    amount = booking["price"]
-    deposit = round(amount * 0.05, 2)
-    
-    payment_id = f"pay_{booking_id}_{int(datetime.now().timestamp())}"
-    
-    conn.execute("""
-        INSERT INTO payments (booking_id, amount, status, payment_id, created_at)
-        VALUES (?, ?, 'pending', ?, CURRENT_TIMESTAMP)
-    """, (booking_id, deposit, payment_id))
-    conn.commit()
-    
-    payment_url = f"https://t.me/pinkspotvelur_bot?start=pay_{payment_id}"
-    
-    return {
-        "payment_url": payment_url,
-        "amount": deposit,
-        "payment_id": payment_id,
-        "booking_id": booking_id
-    }
-
-@app.post("/payment-callback")
-def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    payment_id = data.get("payment_id")
-    
-    conn.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
-    
-    payment = conn.execute("SELECT booking_id FROM payments WHERE payment_id = ?", (payment_id,)).fetchone()
-    if payment:
-        conn.execute("UPDATE bookings SET status = 'confirmed', payment_status = 'paid' WHERE id = ?", (payment["booking_id"],))
-        conn.commit()
-        
-        token = secrets.token_urlsafe(16)
-        booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (payment["booking_id"],)).fetchone()
-        conn.execute("""
-            INSERT INTO chats (booking_id, master_id, client_telegram_id, master_telegram_id, token)
-            VALUES (?, ?, ?, ?, ?)
-        """, (payment["booking_id"], booking["master_id"], booking["client_telegram_id"], None, token))
-        conn.commit()
-    
-    return {"status": "ok"}
-
-# ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ==========
-
 @app.patch("/bookings/{booking_id}/status")
 def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
@@ -732,6 +708,21 @@ def get_master_bookings(master_id: int, conn: sqlite3.Connection = Depends(get_d
            JOIN services s ON b.service_id=s.id
            WHERE b.master_id=? AND b.status!='cancelled' ORDER BY b.date, b.time""",
         (master_id,)
+    ).fetchall()
+    return [dict(b) for b in bookings]
+
+@app.get("/master/{telegram_id}/bookings")
+def get_master_bookings_web(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    
+    bookings = conn.execute(
+        """SELECT b.*, s.name as service_name, s.price
+           FROM bookings b JOIN services s ON b.service_id = s.id
+           WHERE b.master_id = ? AND b.status != 'cancelled'
+           ORDER BY b.date DESC, b.time DESC""",
+        (master["id"],)
     ).fetchall()
     return [dict(b) for b in bookings]
 
@@ -777,32 +768,77 @@ def get_master_stats(telegram_id: str, conn: sqlite3.Connection = Depends(get_db
         "revenue": revenue,
         "unique_clients": unique_clients,
         "rating": round(rating, 1),
-        "completed_bookings": confirmed_bookings
+        "completed_bookings": confirmed_bookings,
+        "total": total_bookings,
+        "pending": pending_bookings
     }
 
-@app.get("/master/{telegram_id}/bookings")
-def get_master_bookings_web(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
-    if not master:
-        raise HTTPException(404, "Master not found")
-    
-    bookings = conn.execute(
-        """SELECT b.*, s.name as service_name, s.price
-           FROM bookings b JOIN services s ON b.service_id = s.id
-           WHERE b.master_id = ? AND b.status != 'cancelled'
-           ORDER BY b.date DESC, b.time DESC""",
-        (master["id"],)
-    ).fetchall()
-    return [dict(b) for b in bookings]
+# ========== ПЛАТЕЖИ (ДЕПОЗИТ 5%) ==========
 
-# ========== ПОЛЬЗОВАТЕЛИ И БЕСПЛАТНЫЙ ПЕРИОД ==========
+@app.post("/create-payment")
+def create_payment(data: PaymentCreate, conn: sqlite3.Connection = Depends(get_db)):
+    booking_id = data.booking_id
+    
+    booking = conn.execute("""
+        SELECT b.*, s.price, m.name as master_name
+        FROM bookings b 
+        JOIN services s ON b.service_id = s.id
+        JOIN masters m ON b.master_id = m.id
+        WHERE b.id = ?
+    """, (booking_id,)).fetchone()
+    
+    if not booking:
+        raise HTTPException(404, "Booking not found")
+    
+    amount = booking["price"]
+    deposit = round(amount * 0.05, 2)
+    
+    payment_id = f"pay_{booking_id}_{int(datetime.now().timestamp())}"
+    
+    conn.execute("""
+        INSERT INTO payments (booking_id, amount, status, payment_id, created_at)
+        VALUES (?, ?, 'pending', ?, CURRENT_TIMESTAMP)
+    """, (booking_id, deposit, payment_id))
+    conn.commit()
+    
+    payment_url = f"https://t.me/pinkspotvelur_bot?start=pay_{payment_id}"
+    
+    return {
+        "payment_url": payment_url,
+        "amount": deposit,
+        "payment_id": payment_id,
+        "booking_id": booking_id
+    }
+
+@app.post("/payment-callback")
+def payment_callback(data: PaymentCallback, conn: sqlite3.Connection = Depends(get_db)):
+    payment_id = data.payment_id
+    
+    conn.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
+    
+    payment = conn.execute("SELECT booking_id FROM payments WHERE payment_id = ?", (payment_id,)).fetchone()
+    if payment:
+        conn.execute("UPDATE bookings SET status = 'confirmed', payment_status = 'paid' WHERE id = ?", (payment["booking_id"],))
+        conn.commit()
+        
+        token = secrets.token_urlsafe(16)
+        booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (payment["booking_id"],)).fetchone()
+        conn.execute("""
+            INSERT OR IGNORE INTO chats (booking_id, master_id, client_telegram_id, master_telegram_id, token)
+            VALUES (?, ?, ?, ?, ?)
+        """, (payment["booking_id"], booking["master_id"], booking["client_telegram_id"], None, token))
+        conn.commit()
+    
+    return {"status": "ok"}
+
+# ========== ПОЛЬЗОВАТЕЛИ ==========
 
 @app.post("/user/register")
-def register_user(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+def register_user(data: UserRegister, conn: sqlite3.Connection = Depends(get_db)):
     try:
         conn.execute(
             "INSERT OR IGNORE INTO users (telegram_id, registered_at) VALUES (?, CURRENT_TIMESTAMP)",
-            (data["telegram_id"],)
+            (data.telegram_id,)
         )
         conn.commit()
         return {"status": "ok"}
@@ -833,11 +869,11 @@ def check_trial(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
 # ========== ЧАТ ==========
 
 @app.post("/chat/send")
-def send_message(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+def send_message(data: MessageIn, conn: sqlite3.Connection = Depends(get_db)):
     try:
         booking = conn.execute(
             "SELECT id, status FROM bookings WHERE id = ?",
-            (data["booking_id"],)
+            (data.booking_id,)
         ).fetchone()
         
         if not booking:
@@ -847,9 +883,9 @@ def send_message(data: dict, conn: sqlite3.Connection = Depends(get_db)):
             raise HTTPException(403, "Chat available only after payment confirmation")
         
         conn.execute(
-            """INSERT INTO chat_messages (booking_id, from_id, to_id, message, created_at)
-               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-            (data["booking_id"], data["from_id"], data["to_id"], data.get("message"))
+            """INSERT INTO chat_messages (booking_id, from_id, to_id, message, photo_url, created_at)
+               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (data.booking_id, data.from_id, data.to_id, data.message, data.photo_url)
         )
         conn.commit()
         return {"status": "ok", "message": "Message sent"}
@@ -948,33 +984,35 @@ def get_chat_by_token(token: str, conn: sqlite3.Connection = Depends(get_db)):
 # ========== ОТЗЫВЫ ==========
 
 @app.post("/reviews")
-def create_review(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+def create_review(data: ReviewIn, conn: sqlite3.Connection = Depends(get_db)):
     try:
         booking = conn.execute(
             "SELECT id FROM bookings WHERE id = ? AND master_id = ? AND client_telegram_id = ? AND status = 'confirmed'",
-            (data.get("booking_id"), data.get("master_id"), data.get("client_telegram_id"))
+            (data.booking_id, data.master_id, conn.execute("SELECT client_telegram_id FROM bookings WHERE id = ?", (data.booking_id,)).fetchone()[0] if data.booking_id else None)
         ).fetchone()
         
         if not booking:
             raise HTTPException(400, "Вы можете оставить отзыв только после подтверждённой записи")
         
-        existing = conn.execute("SELECT id FROM reviews WHERE booking_id = ?", (data.get("booking_id"),)).fetchone()
+        existing = conn.execute("SELECT id FROM reviews WHERE booking_id = ?", (data.booking_id,)).fetchone()
         if existing:
             raise HTTPException(400, "Вы уже оставили отзыв на эту запись")
         
         conn.execute(
             "INSERT INTO reviews (master_id, booking_id, client_name, rating, comment) VALUES (?, ?, ?, ?, ?)",
-            (data.get("master_id"), data.get("booking_id"), data.get("client_name"), data.get("rating"), data.get("comment"))
+            (data.master_id, data.booking_id, data.client_name, data.rating, data.comment)
         )
         conn.commit()
         
         conn.execute(
             "UPDATE masters SET rating = (SELECT AVG(rating) FROM reviews WHERE master_id = ?) WHERE id = ?",
-            (data.get("master_id"), data.get("master_id"))
+            (data.master_id, data.master_id)
         )
         conn.commit()
         
         return {"status": "ok", "message": "Отзыв оставлен"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -987,32 +1025,29 @@ def get_master_reviews(master_id: int, conn: sqlite3.Connection = Depends(get_db
     return [dict(r) for r in reviews]
 
 @app.patch("/reviews/{review_id}/reply")
-def reply_to_review(review_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("UPDATE reviews SET master_reply = ? WHERE id = ?", (data.get("reply"), review_id))
+def reply_to_review(review_id: int, data: ReviewReply, conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute("UPDATE reviews SET master_reply = ? WHERE id = ?", (data.reply, review_id))
     conn.commit()
     return {"status": "ok"}
 
 # ========== АДМИН-ПАНЕЛЬ ==========
 
 @app.post("/admin/add-master")
-def admin_add_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+def admin_add_master(data: MasterIn, conn: sqlite3.Connection = Depends(get_db)):
     try:
         conn.execute(
             """INSERT INTO masters (name, address, lat, lon, phone, instagram, description, telegram_id, work_start, work_end, icon) 
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (data["name"], data["address"], data.get("lat", 47.222078), data.get("lon", 39.720358),
-             data.get("phone", ""), data.get("instagram", ""), data.get("description", ""),
-             data.get("telegram_id", ""), data.get("work_start", "09:00"), data.get("work_end", "20:00"),
-             data.get("icon", "💅"))
+            (data.name, data.address, data.lat, data.lon, data.phone, data.instagram, data.description, data.telegram_id, data.work_start, data.work_end, data.icon)
         )
         conn.commit()
-        return {"status": "ok", "message": f"Мастер {data['name']} добавлен"}
+        return {"status": "ok", "message": f"Мастер {data.name} добавлен"}
     except Exception as e:
         raise HTTPException(500, str(e))
 
 @app.get("/admin/masters")
 def admin_get_masters(conn: sqlite3.Connection = Depends(get_db)):
-    masters = conn.execute("SELECT id, name, telegram_id, phone, instagram, icon, lat, lon FROM masters").fetchall()
+    masters = conn.execute("SELECT id, name, telegram_id, phone, instagram, icon, lat, lon, work_start, work_end FROM masters").fetchall()
     return [dict(m) for m in masters]
 
 @app.delete("/admin/delete-master/{master_id}")
@@ -1026,18 +1061,30 @@ def admin_delete_master(master_id: int, conn: sqlite3.Connection = Depends(get_d
     return {"status": "ok", "message": f"Мастер {master_id} удалён"}
 
 @app.patch("/admin/set-telegram/{master_id}")
-def admin_set_telegram(master_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    telegram_id = data.get("telegram_id")
-    conn.execute("UPDATE masters SET telegram_id = ? WHERE id = ?", (telegram_id, master_id))
+def admin_set_telegram(master_id: int, data: TelegramIdUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute("UPDATE masters SET telegram_id = ? WHERE id = ?", (data.telegram_id, master_id))
     conn.commit()
-    return {"status": "ok", "message": f"telegram_id {telegram_id} назначен мастеру {master_id}"}
+    return {"status": "ok", "message": f"telegram_id {data.telegram_id} назначен мастеру {master_id}"}
 
 @app.patch("/admin/set-icon/{master_id}")
-def admin_set_icon(master_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    icon = data.get("icon", "💅")
-    conn.execute("UPDATE masters SET icon = ? WHERE id = ?", (icon, master_id))
+def admin_set_icon(master_id: int, data: IconUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute("UPDATE masters SET icon = ? WHERE id = ?", (data.icon, master_id))
     conn.commit()
-    return {"status": "ok", "message": f"Иконка {icon} назначена мастеру {master_id}"}
+    return {"status": "ok", "message": f"Иконка {data.icon} назначена мастеру {master_id}"}
+
+@app.get("/admin/stats")
+def admin_get_stats(conn: sqlite3.Connection = Depends(get_db)):
+    masters_count = conn.execute("SELECT COUNT(*) FROM masters").fetchone()[0]
+    bookings_count = conn.execute("SELECT COUNT(*) FROM bookings").fetchone()[0]
+    users_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    reviews_count = conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]
+    
+    return {
+        "masters": masters_count,
+        "bookings": bookings_count,
+        "users": users_count,
+        "reviews": reviews_count
+    }
 
 # ========== ГЛАВНАЯ ==========
 
@@ -1045,11 +1092,14 @@ def admin_set_icon(master_id: int, data: dict, conn: sqlite3.Connection = Depend
 def root():
     return {
         "status": "Beauty Bot API running 🌸",
+        "version": "2.0",
         "endpoints": {
             "masters": "/masters",
             "bookings": "/bookings (POST)",
             "create_payment": "/create-payment (POST)",
-            "payment_callback": "/payment-callback (POST)"
+            "payment_callback": "/payment-callback (POST)",
+            "chat": "/chat/messages/{booking_id}",
+            "reviews": "/reviews (POST)"
         }
     }
 
