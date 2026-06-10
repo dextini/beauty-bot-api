@@ -21,8 +21,8 @@ app = FastAPI(title="Beauty Bot API")
 
 # === КОНФИГУРАЦИЯ ЮKASSA ===
 YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1368786")
-YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "live_aRHBYSr1irUAO8_dvzZCmQCih-vTF0q0NFfSvW5OOcs
-")
+YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", live_aRHBYSr1irUAO8_dvzZCmQCih-vTF0q0NFfSvW5OOcs
+)
 YKASSA_RETURN_URL = os.getenv("YKASSA_RETURN_URL", "https://t.me/pinkspotvelur_bot")
 PAYMENT_COMMISSION = 0.07
 
@@ -130,10 +130,12 @@ def init_db():
     
     try:
         c.execute("ALTER TABLE bookings ADD COLUMN deposit_amount REAL DEFAULT 0")
-    except: pass
+    except:
+        pass
     try:
         c.execute("ALTER TABLE bookings ADD COLUMN payment_id TEXT")
-    except: pass
+    except:
+        pass
     
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
@@ -166,12 +168,14 @@ def generate_slots(work_start, work_end):
     return slots
 
 async def notify_master(token, tg_id, msg):
-    if not token or not tg_id: return
+    if not token or not tg_id:
+        return
     try:
         async with httpx.AsyncClient() as client:
             await client.post(f"https://api.telegram.org/bot{token}/sendMessage",
                             json={"chat_id": tg_id, "text": msg, "parse_mode": "Markdown"})
-    except: pass
+    except:
+        pass
 
 def confirm_booking(booking_id, conn):
     conn.execute("UPDATE bookings SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
