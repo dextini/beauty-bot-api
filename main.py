@@ -24,7 +24,7 @@ YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1368786")
 YKASSA_SECRET_KEY = "live_aRHBYSr1irUAO8_dvzZCmQCih-vTF0q0NFfSvW5OOcs"
 YKASSA_RETURN_URL = os.getenv("YKASSA_RETURN_URL", "https://t.me/pinkspotvelur_bot")
 PAYMENT_COMMISSION = 0.07
-CLEANING_TIME = 15  # 15 минут на уборку между записями
+CLEANING_TIME = 15  # минут на уборку между записями
 
 # === CORS ===
 app.add_middleware(
@@ -157,37 +157,28 @@ def get_db():
     return conn
 
 def time_to_minutes(time_str: str) -> int:
-    """Преобразует время в минуты с начала дня"""
     h, m = map(int, time_str.split(':'))
     return h * 60 + m
 
 def minutes_to_time(minutes: int) -> str:
-    """Преобразует минуты в строку времени HH:MM"""
     h = minutes // 60
     m = minutes % 60
     return f"{h:02d}:{m:02d}"
 
 def generate_slots_with_duration(work_start: str, work_end: str, booked_slots: List[dict], service_duration: int, cleaning_time: int = 15) -> List[str]:
-    """
-    Генерирует свободные слоты с учётом длительности услуги и времени на уборку.
-    booked_slots: список словарей с временем начала и длительностью услуги
-    """
     start_min = time_to_minutes(work_start)
     end_min = time_to_minutes(work_end)
-    interval = 30  # шаг 30 минут
+    interval = 30
     
-    # Преобразуем занятые слоты в занятые интервалы
     occupied_intervals = []
     for slot in booked_slots:
         slot_start = time_to_minutes(slot['time'])
         slot_duration = slot.get('duration_min', 60)
-        slot_end = slot_start + slot_duration + cleaning_time  # добавляем время на уборку
+        slot_end = slot_start + slot_duration + cleaning_time
         occupied_intervals.append((slot_start, slot_end))
     
-    # Сортируем по времени начала
     occupied_intervals.sort()
     
-    # Объединяем пересекающиеся интервалы
     merged = []
     for interval in occupied_intervals:
         if not merged or merged[-1][1] < interval[0]:
@@ -195,36 +186,20 @@ def generate_slots_with_duration(work_start: str, work_end: str, booked_slots: L
         else:
             merged[-1][1] = max(merged[-1][1], interval[1])
     
-    # Генерируем свободные слоты
     free_slots = []
     current_time = start_min
     
     for occ_start, occ_end in merged:
-        # Добавляем слоты от текущего времени до начала занятого интервала
         while current_time + service_duration <= occ_start:
             free_slots.append(minutes_to_time(current_time))
             current_time += interval
-        
-        # Перемещаем текущее время на конец занятого интервала
         current_time = max(current_time, occ_end)
     
-    # Добавляем слоты после последнего занятого интервала до конца рабочего дня
     while current_time + service_duration <= end_min:
         free_slots.append(minutes_to_time(current_time))
         current_time += interval
     
     return free_slots
-
-def generate_slots_simple(work_start: str, work_end: str) -> List[str]:
-    """Простая генерация слотов без учёта длительности (для совместимости)"""
-    slots = []
-    start = datetime.strptime(work_start, "%H:%M")
-    end = datetime.strptime(work_end, "%H:%M")
-    current = start
-    while current < end:
-        slots.append(current.strftime("%H:%M"))
-        current += timedelta(minutes=30)
-    return slots
 
 async def notify_master(token, tg_id, msg):
     if not token or not tg_id: return
@@ -239,10 +214,7 @@ def confirm_booking(booking_id, conn):
     conn.commit()
     logger.info(f"✅ Бронирование {booking_id} подтверждено")
 
-# ========== ГЛАВНАЯ ФУНКЦИЯ ПЛАТЕЖА ==========
 async def create_ykassa_payment(amount: float, description: str, return_url: str, booking_id: int) -> dict:
-    """Создание реального платежа в ЮKassa"""
-    
     if not YKASSA_SHOP_ID or not YKASSA_SECRET_KEY:
         logger.error("ЮKassa не настроена!")
         raise HTTPException(500, "ЮKassa не настроена")
@@ -304,21 +276,28 @@ def get_master_by_telegram(telegram_id: str, conn=Depends(get_db)):
         raise HTTPException(404, "Master not found")
     return dict(m)
 
+@app.get("/masters/{master_id}")
+def get_master_by_id(master_id: int, conn=Depends(get_db)):
+    m = conn.execute("SELECT * FROM masters WHERE id=?", (master_id,)).fetchone()
+    if not m:
+        raise HTTPException(404, "Master not found")
+    services = conn.execute("SELECT * FROM services WHERE master_id=?", (master_id,)).fetchall()
+    d = dict(m)
+    d["services"] = [dict(s) for s in services]
+    return d
+
 @app.get("/masters/{master_id}/slots")
 def get_slots(master_id: int, date: str, service_id: int, conn=Depends(get_db)):
-    """Возвращает свободные слоты с учётом длительности выбранной услуги"""
     master = conn.execute("SELECT * FROM masters WHERE id=?", (master_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
     
-    # Получаем длительность услуги
     service = conn.execute("SELECT duration_min FROM services WHERE id=? AND master_id=?", (service_id, master_id)).fetchone()
     if not service:
         raise HTTPException(404, "Service not found")
     
     service_duration = service["duration_min"]
     
-    # Проверка на выходной
     day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (master_id, date)).fetchone()
     if day_off:
         return {"date": date, "slots": [], "day_off": True}
@@ -326,7 +305,6 @@ def get_slots(master_id: int, date: str, service_id: int, conn=Depends(get_db)):
     work_start = master["work_start"] or DEFAULT_WORK_START
     work_end = master["work_end"] or DEFAULT_WORK_END
     
-    # Получаем все подтверждённые записи на эту дату с их длительностью
     booked = conn.execute("""
         SELECT b.time, s.duration_min 
         FROM bookings b 
@@ -336,14 +314,12 @@ def get_slots(master_id: int, date: str, service_id: int, conn=Depends(get_db)):
     
     booked_slots = [{"time": b["time"], "duration_min": b["duration_min"]} for b in booked]
     
-    # Генерируем свободные слоты с учётом длительности услуги
     free_slots = generate_slots_with_duration(work_start, work_end, booked_slots, service_duration, CLEANING_TIME)
     
     today = datetime.now().strftime("%Y-%m-%d")
     now_time = datetime.now().strftime("%H:%M")
     now_minutes = time_to_minutes(now_time)
     
-    # Фильтруем прошедшие слоты для сегодняшнего дня
     if date == today:
         free_slots = [s for s in free_slots if time_to_minutes(s) > now_minutes]
     
@@ -377,7 +353,6 @@ async def create_booking(data: BookingIn):
         
         logger.info(f"📝 Бронь {booking_id}: {data.client_name} -> {service['name']} на {data.date} {data.time}")
         
-        # СОЗДАЁМ РЕАЛЬНЫЙ ПЛАТЁЖ В ЮKASSA
         payment = await create_ykassa_payment(
             amount=deposit_amount,
             description=f"Бронь услуги {service['name']} ({deposit_amount}₽ из {service['price']}₽)",
