@@ -19,12 +19,13 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Beauty Bot API")
 
-# === КОНФИГУРАЦИЯ ЮKASSA ===
+# === КОНФИГУРАЦИЯ ===
 YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1368786")
 YKASSA_SECRET_KEY = "live_aRHBYSr1irUAO8_dvzZCmQCih-vTF0q0NFfSvW5OOcs"
 YKASSA_RETURN_URL = os.getenv("YKASSA_RETURN_URL", "https://t.me/pinkspotvelur_bot")
-PAYMENT_COMMISSION = 0.07
-CLEANING_TIME = 15  # минут на уборку между записями
+PAYMENT_COMMISSION = 0.07  # 7% накидывается сверху (клиент платит больше)
+CLEANING_TIME = 15
+MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 
 # === CORS ===
 app.add_middleware(
@@ -105,6 +106,7 @@ def init_db():
         date TEXT, time TEXT,
         status TEXT DEFAULT 'pending_payment',
         deposit_amount REAL DEFAULT 0,
+        total_amount REAL DEFAULT 0,
         payment_id TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         confirmed_at TEXT
@@ -132,13 +134,16 @@ def init_db():
         c.execute("ALTER TABLE bookings ADD COLUMN deposit_amount REAL DEFAULT 0")
     except: pass
     try:
+        c.execute("ALTER TABLE bookings ADD COLUMN total_amount REAL DEFAULT 0")
+    except: pass
+    try:
         c.execute("ALTER TABLE bookings ADD COLUMN payment_id TEXT")
     except: pass
     
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
-        c.execute("INSERT INTO masters (name, address, lat, lon, phone, instagram, icon, work_start, work_end) VALUES (?,?,?,?,?,?,?,?,?)",
-                  ("Алина Козлова", "ул. Ленина, 12", 47.222078, 39.720358, "+79001234567", "@alina_nails", "💅", "09:00", "20:00"))
+        c.execute("INSERT INTO masters (name, address, lat, lon, phone, instagram, icon, work_start, work_end, telegram_id, bot_token) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                  ("Алина Козлова", "ул. Ленина, 12", 47.222078, 39.720358, "+79001234567", "@alina_nails", "💅", "09:00", "20:00", "868528632", MASTER_BOT_TOKEN))
         c.execute("SELECT id FROM masters")
         master_id = c.fetchone()[0]
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Маникюр классический", 1200, 60))
@@ -201,17 +206,65 @@ def generate_slots_with_duration(work_start: str, work_end: str, booked_slots: L
     
     return free_slots
 
-async def notify_master(token, tg_id, msg):
-    if not token or not tg_id: return
+async def send_telegram_message(chat_id: str, message: str, parse_mode: str = "Markdown"):
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": tg_id, "text": msg, "parse_mode": "Markdown"})
-    except: pass
+            await client.post(
+                f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": message, "parse_mode": parse_mode}
+            )
+            logger.info(f"✅ Сообщение отправлено в Telegram: {chat_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки в Telegram: {e}")
 
-def confirm_booking(booking_id, conn):
+def confirm_booking(booking_id: int, conn: sqlite3.Connection):
+    """Подтверждение записи после успешной оплаты"""
     conn.execute("UPDATE bookings SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
     conn.commit()
+    
+    booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
+    master = conn.execute("SELECT * FROM masters WHERE id=?", (booking["master_id"],)).fetchone()
+    service = conn.execute("SELECT * FROM services WHERE id=?", (booking["service_id"],)).fetchone()
+    
+    # Создаём чат
+    token = secrets.token_urlsafe(16)
+    conn.execute("INSERT OR IGNORE INTO chats (booking_id, master_id, client_telegram_id, master_telegram_id, token) VALUES (?,?,?,?,?)",
+                (booking_id, master["id"], booking["client_telegram_id"], master["telegram_id"], token))
+    conn.commit()
+    
+    # Уведомление мастеру
+    master_msg = (
+        f"🌸 *НОВАЯ ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸\n\n"
+        f"✅ *Статус:* Оплачен (депозит 7% получен)\n"
+        f"👩 *Клиент:* {booking['client_name']}\n"
+        f"📞 *Телефон:* {booking['client_phone'] or 'не указан'}\n"
+        f"💅 *Услуга:* {service['name']}\n"
+        f"💰 *Стоимость услуги:* {service['price']} ₽\n"
+        f"💸 *Депозит (7%):* {booking['deposit_amount']} ₽\n"
+        f"📅 *Дата:* {booking['date']}\n"
+        f"🕐 *Время:* {booking['time']}\n\n"
+        f"✨ Вы получите полную стоимость услуги {service['price']} ₽ на месте.\n"
+        f"💬 Чат с клиентом доступен в приложении."
+    )
+    asyncio.create_task(send_telegram_message(master["telegram_id"], master_msg))
+    
+    # Уведомление клиенту
+    client_msg = (
+        f"🌸 *ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸\n\n"
+        f"✅ *Статус:* Подтверждено\n"
+        f"💅 *Мастер:* {master['name']}\n"
+        f"📍 *Адрес:* {master['address']}\n"
+        f"📞 *Телефон мастера:* {master['phone'] or 'уточните в чате'}\n"
+        f"💅 *Услуга:* {service['name']}\n"
+        f"💰 *Стоимость:* {service['price']} ₽\n"
+        f"💸 *Оплачено (депозит 7%):* {booking['deposit_amount']} ₽\n"
+        f"💎 *Остаток на месте:* {service['price']} ₽\n"
+        f"📅 *Дата:* {booking['date']}\n"
+        f"🕐 *Время:* {booking['time']}\n\n"
+        f"✨ Ждём вас! Для связи с мастером используйте чат в приложении."
+    )
+    asyncio.create_task(send_telegram_message(booking["client_telegram_id"], client_msg))
+    
     logger.info(f"✅ Бронирование {booking_id} подтверждено")
 
 async def create_ykassa_payment(amount: float, description: str, return_url: str, booking_id: int) -> dict:
@@ -342,20 +395,22 @@ async def create_booking(data: BookingIn):
         if existing:
             raise HTTPException(409, "Slot already booked")
         
+        # 7% от стоимости услуги (накидывается сверху, клиент платит больше)
         deposit_amount = round(service["price"] * PAYMENT_COMMISSION, 2)
+        total_with_commission = service["price"] + deposit_amount
         
         cur = conn.execute("""
-            INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time, deposit_amount)
-            VALUES (?,?,?,?,?,?,?,?)
-        """, (data.master_id, data.service_id, data.client_name, data.client_telegram_id, data.client_phone, data.date, data.time, deposit_amount))
+            INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time, deposit_amount, total_amount)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, (data.master_id, data.service_id, data.client_name, data.client_telegram_id, data.client_phone, data.date, data.time, deposit_amount, total_with_commission))
         conn.commit()
         booking_id = cur.lastrowid
         
-        logger.info(f"📝 Бронь {booking_id}: {data.client_name} -> {service['name']} на {data.date} {data.time}")
+        logger.info(f"📝 Бронь {booking_id}: {data.client_name} -> {service['name']} | Услуга: {service['price']} ₽ | Депозит 7%: {deposit_amount} ₽ | Итого: {total_with_commission} ₽")
         
         payment = await create_ykassa_payment(
             amount=deposit_amount,
-            description=f"Бронь услуги {service['name']} ({deposit_amount}₽ из {service['price']}₽)",
+            description=f"Бронь услуги {service['name']} (депозит {deposit_amount}₽, остаток {service['price']}₽ мастеру)",
             return_url=f"{YKASSA_RETURN_URL}?booking_id={booking_id}",
             booking_id=booking_id
         )
@@ -363,11 +418,26 @@ async def create_booking(data: BookingIn):
         conn.execute("UPDATE bookings SET payment_id=? WHERE id=?", (payment["payment_id"], booking_id))
         conn.commit()
         
+        # Уведомление мастеру о новой заявке
+        master_msg = (
+            f"💳 *НОВАЯ ЗАЯВКА (ОЖИДАЕТ ОПЛАТЫ)* 💳\n\n"
+            f"👩 *Клиент:* {data.client_name}\n"
+            f"📞 *Телефон:* {data.client_phone or 'не указан'}\n"
+            f"💅 *Услуга:* {service['name']}\n"
+            f"💰 *Стоимость услуги:* {service['price']} ₽\n"
+            f"💸 *Депозит 7%:* {deposit_amount} ₽\n"
+            f"📅 *Дата:* {data.date}\n"
+            f"🕐 *Время:* {data.time}\n\n"
+            f"⏳ Ожидаем оплаты депозита от клиента. После оплаты запись автоматически подтвердится."
+        )
+        asyncio.create_task(send_telegram_message(master["telegram_id"], master_msg))
+        
         return {
             "booking_id": booking_id,
             "payment_url": payment["confirmation_url"],
             "deposit_amount": deposit_amount,
-            "total_price": service["price"],
+            "service_price": service["price"],
+            "total_with_commission": total_with_commission,
             "status": "pending_payment"
         }
     except HTTPException:
@@ -380,7 +450,8 @@ async def create_booking(data: BookingIn):
 
 @app.post("/ykassa-webhook")
 async def ykassa_webhook(notification: dict):
-    logger.info(f"Webhook received")
+    logger.info(f"Webhook received: {notification}")
+    
     if notification.get("type") == "notification":
         payment_obj = notification.get("object", {})
         payment_id = payment_obj.get("id")
@@ -391,10 +462,15 @@ async def ykassa_webhook(notification: dict):
             try:
                 booking = conn.execute("SELECT id FROM bookings WHERE payment_id=?", (payment_id,)).fetchone()
                 if booking:
+                    # ПОДТВЕРЖДАЕМ ЗАПИСЬ АВТОМАТИЧЕСКИ
                     confirm_booking(booking["id"], conn)
-                    logger.info(f"✅ Booking {booking['id']} confirmed")
+                    logger.info(f"✅ Платёж {payment_id} успешен, запись {booking['id']} подтверждена")
+                    return {"status": "ok", "message": f"Booking {booking['id']} confirmed"}
+                else:
+                    logger.warning(f"Бронь не найдена для платежа {payment_id}")
             finally:
                 conn.close()
+    
     return {"status": "ok"}
 
 @app.get("/bookings/client/{telegram_id}")
@@ -413,7 +489,7 @@ def get_stats(telegram_id: str, conn=Depends(get_db)):
         raise HTTPException(404, "Master not found")
     confirmed = conn.execute("SELECT COUNT(*) FROM bookings WHERE master_id=? AND status='confirmed'", (master["id"],)).fetchone()[0]
     pending = conn.execute("SELECT COUNT(*) FROM bookings WHERE master_id=? AND status='pending_payment'", (master["id"],)).fetchone()[0]
-    revenue = conn.execute("SELECT SUM(s.price) FROM bookings b JOIN services s ON b.service_id=s.id WHERE b.master_id=? AND b.status='confirmed'", (master["id"],)).fetchone()[0] or 0
+    revenue = conn.execute("SELECT SUM(service_price) FROM bookings WHERE master_id=? AND status='confirmed'", (master["id"],)).fetchone()[0] or 0
     return {"completed_bookings": confirmed, "pending_payment": pending, "revenue": revenue}
 
 @app.post("/chat/send")
