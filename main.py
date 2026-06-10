@@ -1,6 +1,5 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import sqlite3
@@ -8,17 +7,12 @@ import os
 import json
 import secrets
 from datetime import datetime, timedelta
-import asyncio
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Beauty Bot API")
-
-# === КОНФИГУРАЦИЯ ===
-PAYMENT_COMMISSION = 0.07
-MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 
 # === CORS ===
 app.add_middleware(
@@ -29,27 +23,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.middleware("http")
-async def add_cors_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    return response
-
-@app.options("/{path:path}")
-async def options_handler(path: str):
-    return JSONResponse(content={"message": "OK"}, headers={"Access-Control-Allow-Origin": "*"})
-
 DB_PATH = "beauty.db"
-DEFAULT_WORK_START = "09:00"
-DEFAULT_WORK_END = "20:00"
 
 # ========== МОДЕЛИ ==========
-class ServiceIn(BaseModel):
-    name: str
-    price: int
-    duration_min: int
+class BookingIn(BaseModel):
+    master_id: int
+    service_id: int
+    client_name: str
+    client_telegram_id: str
+    client_phone: Optional[str] = None
+    date: str
+    time: str
 
 class MasterIn(BaseModel):
     name: str
@@ -62,27 +46,10 @@ class MasterIn(BaseModel):
     icon: str = "💅"
     telegram_id: str = None
 
-class BookingIn(BaseModel):
-    master_id: int
-    service_id: int
-    client_name: str
-    client_telegram_id: str
-    client_phone: Optional[str]
-    date: str
-    time: str
-
-class MessageIn(BaseModel):
-    booking_id: int
-    from_id: str
-    to_id: str
-    message: str = None
-
-class ReviewIn(BaseModel):
-    master_id: int
-    booking_id: int
-    client_name: str
-    rating: int
-    comment: str = None
+class ServiceIn(BaseModel):
+    name: str
+    price: int
+    duration_min: int
 
 class LocationUpdate(BaseModel):
     lat: float
@@ -95,13 +62,31 @@ class WorkHoursUpdate(BaseModel):
 class TelegramIdUpdate(BaseModel):
     telegram_id: str
 
-class UserRegister(BaseModel):
-    telegram_id: str
-
 class DayOffRequest(BaseModel):
     date: str
 
+class MessageIn(BaseModel):
+    booking_id: int
+    from_id: str
+    to_id: str
+    message: str
+
+class ReviewIn(BaseModel):
+    master_id: int
+    booking_id: int
+    client_name: str
+    rating: int
+    comment: str = None
+
+class UserRegister(BaseModel):
+    telegram_id: str
+
 # ========== БД ==========
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -109,19 +94,17 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS masters (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT, photo_url TEXT, description TEXT, address TEXT,
-            lat REAL, lon REAL, phone TEXT, instagram TEXT, telegram_id TEXT,
+            name TEXT, address TEXT, lat REAL, lon REAL,
+            phone TEXT, instagram TEXT, telegram_id TEXT,
             work_start TEXT DEFAULT '09:00', work_end TEXT DEFAULT '20:00',
-            registered_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            bot_token TEXT, photos TEXT, rating REAL DEFAULT 0, icon TEXT DEFAULT '💅'
+            bot_token TEXT, description TEXT, icon TEXT DEFAULT '💅', rating REAL DEFAULT 0
         )
     """)
     
     c.execute("""
         CREATE TABLE IF NOT EXISTS services (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            master_id INTEGER, name TEXT, price INTEGER, duration_min INTEGER,
-            FOREIGN KEY (master_id) REFERENCES masters(id)
+            master_id INTEGER, name TEXT, price INTEGER, duration_min INTEGER
         )
     """)
     
@@ -132,13 +115,10 @@ def init_db():
             client_name TEXT, client_telegram_id TEXT, client_phone TEXT,
             date TEXT, time TEXT,
             status TEXT DEFAULT 'pending_payment',
-            payment_status TEXT DEFAULT 'pending',
             deposit_amount REAL DEFAULT 0,
             payment_id TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            confirmed_at TEXT,
-            FOREIGN KEY (master_id) REFERENCES masters(id),
-            FOREIGN KEY (service_id) REFERENCES services(id)
+            confirmed_at TEXT
         )
     """)
     
@@ -153,10 +133,8 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS chats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            booking_id INTEGER UNIQUE,
-            master_id INTEGER,
-            client_telegram_id TEXT,
-            master_telegram_id TEXT,
+            booking_id INTEGER UNIQUE, master_id INTEGER,
+            client_telegram_id TEXT, master_telegram_id TEXT,
             token TEXT UNIQUE
         )
     """)
@@ -173,18 +151,7 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id TEXT UNIQUE,
-            registered_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            booking_id INTEGER, amount REAL,
-            status TEXT DEFAULT 'pending',
-            payment_id TEXT UNIQUE,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            telegram_id TEXT UNIQUE, registered_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
@@ -197,9 +164,7 @@ def init_db():
         )
     """)
     
-    conn.commit()
-    
-    # Добавляем колонки если нет
+    # Добавляем недостающие колонки (если БД старая)
     try:
         c.execute("ALTER TABLE bookings ADD COLUMN deposit_amount REAL DEFAULT 0")
     except: pass
@@ -207,16 +172,16 @@ def init_db():
         c.execute("ALTER TABLE bookings ADD COLUMN payment_id TEXT")
     except: pass
     try:
-        c.execute("ALTER TABLE bookings ADD COLUMN confirmed_at TEXT")
-    except: pass
-    try:
         c.execute("ALTER TABLE masters ADD COLUMN work_start TEXT DEFAULT '09:00'")
     except: pass
     try:
         c.execute("ALTER TABLE masters ADD COLUMN work_end TEXT DEFAULT '20:00'")
     except: pass
+    try:
+        c.execute("ALTER TABLE masters ADD COLUMN description TEXT")
+    except: pass
     
-    # Тестовые данные
+    # Тестовые мастера
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
         c.execute("INSERT INTO masters (name, address, lat, lon, phone, instagram, icon) VALUES (?,?,?,?,?,?,?)",
@@ -236,14 +201,9 @@ def init_db():
         conn.commit()
     
     conn.close()
-    logger.info("✅ БД готова")
+    logger.info("✅ База данных готова")
 
 init_db()
-
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 def generate_slots(work_start, work_end):
     slots = []
@@ -255,50 +215,77 @@ def generate_slots(work_start, work_end):
         current += timedelta(minutes=30)
     return slots
 
-async def notify_master(token, tg_id, msg):
-    if not token or not tg_id: return
-    try:
-        import httpx
-        async with httpx.AsyncClient() as client:
-            await client.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": tg_id, "text": msg, "parse_mode": "Markdown"})
-    except: pass
-
 def confirm_booking(booking_id, conn):
-    conn.execute("UPDATE bookings SET status='confirmed', payment_status='paid', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
-    booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
-    master = conn.execute("SELECT * FROM masters WHERE id=?", (booking["master_id"],)).fetchone()
-    service = conn.execute("SELECT * FROM services WHERE id=?", (booking["service_id"],)).fetchone()
-    token = secrets.token_urlsafe(16)
-    conn.execute("INSERT OR IGNORE INTO chats (booking_id, master_id, client_telegram_id, master_telegram_id, token) VALUES (?,?,?,?,?)",
-                (booking_id, master["id"], booking["client_telegram_id"], master["telegram_id"], token))
+    conn.execute("UPDATE bookings SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
     conn.commit()
-    
-    asyncio.create_task(notify_master(master["bot_token"], master["telegram_id"],
-        f"✅ *Запись подтверждена!*\n👩 {booking['client_name']}\n💅 {service['name']}\n💰 {service['price']} ₽\n📅 {booking['date']} в {booking['time']}"))
     logger.info(f"✅ Бронирование {booking_id} подтверждено")
 
-# ========== ГЛАВНАЯ ФУНКЦИЯ - ВСЕГДА ВОЗВРАЩАЕТ ЯНДЕКС ==========
-async def create_payment(amount: float, booking_id: int) -> dict:
-    """Всегда возвращает Яндекс для теста"""
-    logger.info(f"💳 Создан платёж на {amount}₽ для брони {booking_id}")
-    return {
-        "confirmation_url": "https://yandex.ru",
-        "payment_id": f"test_{booking_id}"
-    }
+# ========== ОСНОВНОЙ ЭНДПОИНТ ==========
+@app.post("/bookings")
+async def create_booking(data: BookingIn):
+    conn = get_db()
+    try:
+        # Проверка мастера
+        master = conn.execute("SELECT * FROM masters WHERE id=?", (data.master_id,)).fetchone()
+        if not master:
+            raise HTTPException(404, "Master not found")
+        
+        # Проверка услуги
+        service = conn.execute("SELECT * FROM services WHERE id=? AND master_id=?", (data.service_id, data.master_id)).fetchone()
+        if not service:
+            raise HTTPException(404, "Service not found")
+        
+        # Проверка выходного
+        day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (data.master_id, data.date)).fetchone()
+        if day_off:
+            raise HTTPException(409, "Master is off this day")
+        
+        # Проверка занятости
+        existing = conn.execute(
+            "SELECT id FROM bookings WHERE master_id=? AND date=? AND time=? AND status IN ('pending_payment', 'confirmed')",
+            (data.master_id, data.date, data.time)
+        ).fetchone()
+        if existing:
+            raise HTTPException(409, "Slot already booked")
+        
+        # Создаём запись
+        deposit_amount = round(service["price"] * 0.07, 2)
+        cur = conn.execute(
+            "INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time, deposit_amount) VALUES (?,?,?,?,?,?,?,?)",
+            (data.master_id, data.service_id, data.client_name, data.client_telegram_id, data.client_phone, data.date, data.time, deposit_amount)
+        )
+        conn.commit()
+        booking_id = cur.lastrowid
+        
+        logger.info(f"📝 Запись {booking_id}: {data.client_name} -> {service['name']} на {data.date} {data.time}")
+        
+        # ✅ ВСЕГДА ВОЗВРАЩАЕМ ЯНДЕКС
+        return {
+            "booking_id": booking_id,
+            "payment_url": "https://yandex.ru",
+            "deposit_amount": deposit_amount,
+            "total_price": service["price"],
+            "status": "pending_payment"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        raise HTTPException(500, detail=str(e))
+    finally:
+        conn.close()
 
-# ========== ЭНДПОИНТЫ ==========
-
+# ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ (упрощённые) ==========
 @app.get("/masters")
 def get_masters(conn=Depends(get_db)):
     masters = conn.execute("SELECT * FROM masters").fetchall()
     result = []
     for m in masters:
-        completed = conn.execute("SELECT COUNT(*) FROM bookings WHERE master_id=? AND status='confirmed'", (m["id"],)).fetchone()[0]
         services = conn.execute("SELECT * FROM services WHERE master_id=?", (m["id"],)).fetchall()
         d = dict(m)
         d["services"] = [dict(s) for s in services]
-        d["completed_bookings"] = completed
+        d["completed_bookings"] = 0
         d["photos"] = []
         result.append(d)
     return result
@@ -308,11 +295,10 @@ def get_master(master_id: int, conn=Depends(get_db)):
     m = conn.execute("SELECT * FROM masters WHERE id=?", (master_id,)).fetchone()
     if not m:
         raise HTTPException(404, "Master not found")
-    completed = conn.execute("SELECT COUNT(*) FROM bookings WHERE master_id=? AND status='confirmed'", (master_id,)).fetchone()[0]
     services = conn.execute("SELECT * FROM services WHERE master_id=?", (master_id,)).fetchall()
     d = dict(m)
     d["services"] = [dict(s) for s in services]
-    d["completed_bookings"] = completed
+    d["completed_bookings"] = 0
     d["photos"] = []
     return d
 
@@ -340,18 +326,14 @@ def get_slots(master_id: int, date: str, conn=Depends(get_db)):
     master = conn.execute("SELECT * FROM masters WHERE id=?", (master_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
-    
     day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (master_id, date)).fetchone()
     if day_off:
         return {"date": date, "slots": [], "day_off": True}
-    
     work_start = master["work_start"] or "09:00"
     work_end = master["work_end"] or "20:00"
     all_slots = generate_slots(work_start, work_end)
-    
     booked = conn.execute("SELECT time FROM bookings WHERE master_id=? AND date=? AND status IN ('pending_payment', 'confirmed')", (master_id, date)).fetchall()
     booked_times = {b["time"] for b in booked}
-    
     today = datetime.now().strftime("%Y-%m-%d")
     now_time = datetime.now().strftime("%H:%M")
     free = [s for s in all_slots if s not in booked_times and not (date == today and s <= now_time)]
@@ -395,67 +377,6 @@ def delete_service(telegram_id: str, service_id: int, conn=Depends(get_db)):
     conn.execute("DELETE FROM services WHERE id=? AND master_id=?", (service_id, master["id"]))
     conn.commit()
     return {"status": "ok"}
-
-# ========== ОСНОВНОЙ ЭНДПОИНТ ЗАПИСИ ==========
-
-@app.post("/bookings")
-async def create_booking(data: BookingIn):
-    conn = get_db()
-    try:
-        master = conn.execute("SELECT * FROM masters WHERE id=?", (data.master_id,)).fetchone()
-        if not master:
-            raise HTTPException(404, "Master not found")
-        
-        service = conn.execute("SELECT * FROM services WHERE id=? AND master_id=?", (data.service_id, data.master_id)).fetchone()
-        if not service:
-            raise HTTPException(404, "Service not found")
-        
-        day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (data.master_id, data.date)).fetchone()
-        if day_off:
-            raise HTTPException(409, "Master is off")
-        
-        existing = conn.execute("SELECT id FROM bookings WHERE master_id=? AND date=? AND time=? AND status IN ('pending_payment', 'confirmed')", 
-                               (data.master_id, data.date, data.time)).fetchone()
-        if existing:
-            raise HTTPException(409, "Slot already booked")
-        
-        deposit_amount = round(service["price"] * PAYMENT_COMMISSION, 2)
-        
-        cur = conn.execute("""
-            INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time, status, deposit_amount)
-            VALUES (?,?,?,?,?,?,?, 'pending_payment', ?)
-        """, (data.master_id, data.service_id, data.client_name, data.client_telegram_id, data.client_phone, data.date, data.time, deposit_amount))
-        conn.commit()
-        booking_id = cur.lastrowid
-        
-        logger.info(f"📝 Бронь {booking_id}: {data.client_name} -> {service['name']} на {data.date} {data.time}")
-        
-        # СОЗДАЁМ ПЛАТЁЖ (ВСЕГДА ВОЗВРАЩАЕТ ЯНДЕКС)
-        payment = await create_payment(deposit_amount, booking_id)
-        
-        conn.execute("UPDATE bookings SET payment_id=? WHERE id=?", (payment["payment_id"], booking_id))
-        conn.commit()
-        
-        # Уведомление мастеру
-        await notify_master(master["bot_token"], master["telegram_id"],
-            f"💳 *Новая заявка*\n👩 {data.client_name}\n💅 {service['name']}\n💰 {service['price']} ₽ (депозит {deposit_amount}₽)\n📅 {data.date} в {data.time}")
-        
-        return {
-            "booking_id": booking_id,
-            "payment_url": payment["confirmation_url"],
-            "deposit_amount": deposit_amount,
-            "total_price": service["price"],
-            "status": "pending_payment"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        raise HTTPException(500, detail=str(e))
-    finally:
-        conn.close()
-
-# ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ==========
 
 @app.get("/bookings/client/{telegram_id}")
 def get_client_bookings(telegram_id: str, conn=Depends(get_db)):
@@ -514,8 +435,6 @@ def create_review(data: ReviewIn, conn=Depends(get_db)):
     conn.execute("INSERT INTO reviews (master_id, booking_id, client_name, rating, comment) VALUES (?,?,?,?,?)",
                 (data.master_id, data.booking_id, data.client_name, data.rating, data.comment))
     conn.commit()
-    conn.execute("UPDATE masters SET rating = (SELECT AVG(rating) FROM reviews WHERE master_id=?) WHERE id=?", (data.master_id, data.master_id))
-    conn.commit()
     return {"status": "ok"}
 
 @app.get("/reviews/master/{master_id}")
@@ -529,21 +448,9 @@ def register_user(data: UserRegister, conn=Depends(get_db)):
     conn.commit()
     return {"status": "ok"}
 
-@app.get("/payment-status/{booking_id}")
-def payment_status(booking_id: int, conn=Depends(get_db)):
-    booking = conn.execute("SELECT status, payment_status, deposit_amount FROM bookings WHERE id=?", (booking_id,)).fetchone()
-    if not booking:
-        raise HTTPException(404, "Booking not found")
-    return dict(booking)
-
-@app.post("/ykassa-webhook")
-async def ykassa_webhook(notification: dict):
-    logger.info(f"Webhook: {notification}")
-    return {"status": "ok"}
-
 @app.get("/")
 def root():
-    return {"status": "Beauty Bot API running 🌸", "version": "3.0.0", "test_mode": True}
+    return {"status": "Beauty Bot API running 🌸", "test_mode": True, "payment_url": "https://yandex.ru"}
 
 if __name__ == "__main__":
     import uvicorn
