@@ -246,7 +246,7 @@ def init_db():
         )
     """)
 
-    # Таблица записей (с полной структурой)
+    # Таблица записей
     c.execute("""
         CREATE TABLE IF NOT EXISTS bookings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -459,7 +459,6 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
     """, (booking_id, booking["master_id"], booking["client_telegram_id"], master["telegram_id"], token))
     conn.commit()
     
-    # Уведомления
     master_msg = f"✅ *Запись подтверждена!*\n👩 Клиент: {booking['client_name']}\n💅 Услуга: {service['name']}\n💰 Сумма: {service['price']} ₽\n📅 {booking['date']} в {booking['time']}"
     client_msg = f"✅ *Запись подтверждена!*\n💅 Мастер: {master['name']}\n📍 {master['address']}\n💰 {service['price']} ₽\n📅 {booking['date']} в {booking['time']}\n\n🌸 Ждём вас!"
     
@@ -471,6 +470,7 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
 async def create_ykassa_payment(amount: float, description: str, return_url: str, booking_id: int) -> dict:
     """Создание платежа в ЮKassa"""
     if not YKASSA_SHOP_ID or not YKASSA_SECRET_KEY:
+        logger.warning("ЮKassa не настроена, тестовый режим")
         return {
             "confirmation_url": f"https://t.me/pinkspotvelur_bot?booking_id={booking_id}",
             "payment_id": f"test_{booking_id}"
@@ -481,7 +481,6 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
     
     payment_data = {
         "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
-        "payment_method_data": {"type": "bank_card"},
         "confirmation": {"type": "redirect", "return_url": return_url},
         "description": description[:120],
         "capture": True,
@@ -493,17 +492,42 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
             response = await client.post(
                 "https://api.yookassa.ru/v3/payments",
                 json=payment_data,
-                headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json", "Idempotence-Key": idempotence_key}
+                headers={
+                    "Authorization": f"Basic {auth}",
+                    "Content-Type": "application/json",
+                    "Idempotence-Key": idempotence_key
+                }
             )
+            
+            logger.info(f"ЮKassa status: {response.status_code}")
+            
             if response.status_code == 200:
                 data = response.json()
-                return {"confirmation_url": data["confirmation"]["confirmation_url"], "payment_id": data["id"]}
+                # Получаем URL для оплаты
+                if "confirmation" in data and "confirmation_url" in data["confirmation"]:
+                    payment_url = data["confirmation"]["confirmation_url"]
+                elif "confirmation_url" in data:
+                    payment_url = data["confirmation_url"]
+                else:
+                    payment_url = f"https://t.me/pinkspotvelur_bot?booking_id={booking_id}"
+                
+                return {
+                    "confirmation_url": payment_url,
+                    "payment_id": data.get("id", f"pay_{booking_id}")
+                }
             else:
-                logger.error(f"ЮKassa error: {response.text}")
-                return {"confirmation_url": f"https://t.me/pinkspotvelur_bot?booking_id={booking_id}", "payment_id": f"error_{booking_id}"}
+                error_text = response.text
+                logger.error(f"ЮKassa ошибка {response.status_code}: {error_text}")
+                return {
+                    "confirmation_url": f"https://t.me/pinkspotvelur_bot?booking_id={booking_id}",
+                    "payment_id": f"error_{booking_id}"
+                }
     except Exception as e:
         logger.error(f"Payment error: {e}")
-        return {"confirmation_url": f"https://t.me/pinkspotvelur_bot?booking_id={booking_id}", "payment_id": f"fallback_{booking_id}"}
+        return {
+            "confirmation_url": f"https://t.me/pinkspotvelur_bot?booking_id={booking_id}",
+            "payment_id": f"fallback_{booking_id}"
+        }
 
 # ========== ЭНДПОИНТЫ ==========
 
@@ -540,6 +564,44 @@ def get_master_by_telegram(telegram_id: str, conn: sqlite3.Connection = Depends(
     if not master:
         raise HTTPException(404, "Master not found")
     return dict(master)
+
+@app.post("/masters")
+def add_master(master: MasterIn, conn: sqlite3.Connection = Depends(get_db)):
+    cursor = conn.execute(
+        """INSERT INTO masters (name, address, lat, lon, phone, instagram, description, icon, telegram_id, work_start, work_end, registered_at) 
+           VALUES (?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)""",
+        (master.name, master.address, master.lat, master.lon, master.phone, master.instagram, master.description, master.icon, master.telegram_id, master.work_start, master.work_end)
+    )
+    conn.commit()
+    return {"status": "ok", "master_id": cursor.lastrowid}
+
+@app.delete("/masters/{master_id}")
+def delete_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute("DELETE FROM services WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM bookings WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM days_off WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM reviews WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM masters WHERE id = ?", (master_id,))
+    conn.commit()
+    return {"status": "ok"}
+
+@app.patch("/masters/{master_id}/telegram")
+def set_master_telegram(master_id: int, data: TelegramIdUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute("UPDATE masters SET telegram_id = ? WHERE id = ?", (data.telegram_id, master_id))
+    conn.commit()
+    return {"status": "ok"}
+
+@app.patch("/masters/{master_id}/bot-token")
+def set_master_bot_token(master_id: int, data: BotTokenUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (data.bot_token, master_id))
+    conn.commit()
+    return {"status": "ok"}
+
+@app.patch("/masters/{master_id}/icon")
+def set_master_icon(master_id: int, data: IconUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute("UPDATE masters SET icon = ? WHERE id = ?", (data.icon, master_id))
+    conn.commit()
+    return {"status": "ok"}
 
 @app.patch("/master/{telegram_id}/location")
 def update_master_location(telegram_id: str, data: LocationUpdate, conn: sqlite3.Connection = Depends(get_db)):
@@ -628,12 +690,10 @@ async def create_booking(data: BookingIn):
         if not service:
             raise HTTPException(404, "Service not found")
         
-        # Проверка на выходной
         day_off = conn.execute("SELECT id FROM days_off WHERE master_id=? AND date=?", (data.master_id, data.date)).fetchone()
         if day_off:
             raise HTTPException(409, "Master is off this day")
         
-        # Проверка на занятость
         existing = conn.execute("SELECT id FROM bookings WHERE master_id=? AND date=? AND time=? AND status IN ('pending_payment', 'confirmed')", (data.master_id, data.date, data.time)).fetchone()
         if existing:
             raise HTTPException(409, "This time slot is already booked")
@@ -649,7 +709,6 @@ async def create_booking(data: BookingIn):
         
         logger.info(f"Booking {booking_id} created for {data.client_name}")
         
-        # Создаём платёж
         payment_result = await create_ykassa_payment(
             amount=deposit_amount,
             description=f"Бронь услуги {service['name']} ({deposit_amount}₽ из {service['price']}₽)",
@@ -661,7 +720,6 @@ async def create_booking(data: BookingIn):
         conn.execute("INSERT INTO payments (booking_id, amount, status, payment_id, ykassa_payment_id) VALUES (?, ?, 'pending', ?, ?)", (booking_id, deposit_amount, payment_result["payment_id"], payment_result["payment_id"]))
         conn.commit()
         
-        # Уведомляем мастера
         master_msg = f"💳 *Новая заявка*\n👩 {data.client_name}\n💅 {service['name']}\n💰 {service['price']} ₽ (депозит {deposit_amount}₽)\n📅 {data.date} в {data.time}"
         await notify_master(master["bot_token"], master["telegram_id"], master_msg)
         
@@ -684,7 +742,7 @@ async def create_booking(data: BookingIn):
 
 @app.post("/ykassa-webhook")
 async def ykassa_webhook(notification: dict):
-    logger.info(f"Webhook received: {notification}")
+    logger.info(f"Webhook received")
     
     if notification.get("type") == "notification":
         payment_obj = notification.get("object", {})
@@ -698,7 +756,7 @@ async def ykassa_webhook(notification: dict):
                 if booking:
                     conn.execute("UPDATE payments SET status = 'paid', completed_at = CURRENT_TIMESTAMP WHERE payment_id = ? OR ykassa_payment_id = ?", (payment_id, payment_id))
                     confirm_booking(booking["id"], conn)
-                    logger.info(f"✅ Booking {booking['id']} confirmed after payment {payment_id}")
+                    logger.info(f"✅ Booking {booking['id']} confirmed")
             finally:
                 conn.close()
     
@@ -777,6 +835,13 @@ def register_user(data: UserRegister, conn: sqlite3.Connection = Depends(get_db)
     conn.execute("INSERT OR IGNORE INTO users (telegram_id) VALUES (?)", (data.telegram_id,))
     conn.commit()
     return {"status": "ok"}
+
+@app.get("/payment-status/{booking_id}")
+def get_payment_status(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    booking = conn.execute("SELECT status, payment_status, deposit_amount FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    if not booking:
+        raise HTTPException(404, "Booking not found")
+    return dict(booking)
 
 @app.get("/")
 def root():
