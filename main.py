@@ -158,7 +158,6 @@ class DayOffRequest(BaseModel):
 
 # ========== МИГРАЦИЯ БД ==========
 def migrate_db():
-    """Автоматическое добавление недостающих колонок"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
@@ -178,8 +177,8 @@ def migrate_db():
             try:
                 c.execute(f"ALTER TABLE bookings ADD COLUMN {col_name} {col_type}")
                 logger.info(f"✅ Добавлена колонка {col_name} в bookings")
-            except Exception as e:
-                logger.warning(f"Не удалось добавить {col_name}: {e}")
+            except:
+                pass
     
     c.execute("PRAGMA table_info(masters)")
     master_columns = [col[1] for col in c.fetchall()]
@@ -196,8 +195,8 @@ def migrate_db():
             try:
                 c.execute(f"ALTER TABLE masters ADD COLUMN {col_name} {col_type}")
                 logger.info(f"✅ Добавлена колонка {col_name} в masters")
-            except Exception as e:
-                logger.warning(f"Не удалось добавить {col_name}: {e}")
+            except:
+                pass
     
     conn.commit()
     conn.close()
@@ -356,9 +355,9 @@ def fill_test_data():
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
         masters_data = [
-            ("Алина Козлова", None, "Мастер маникюра с 5-летним опытом\n🏆 Топ-мастер 2024\n💅 Работаю с премиальными материалами", "ул. Ленина, 12", 47.222078, 39.720358, "+79001234567", "@alina_nails", "💅"),
-            ("Мария Иванова", None, "Профессиональный визажист и мастер бровей\n👁️ 1000+ довольных клиентов\n✨ Дневной и вечерний макияж", "пр. Мира, 45", 47.223078, 39.721358, "+79009876543", "@maria_beauty", "👁️"),
-            ("Екатерина Смирнова", None, "Специалист по уходу за ресницами\n👀 Ламинирование, ботокс, наращивание\n🌿 Только качественные материалы", "ул. Садовая, 8", 47.221078, 39.719358, "+79005551234", "@kate_lashes", "👀"),
+            ("Алина Козлова", None, "Мастер маникюра", "ул. Ленина, 12", 47.222078, 39.720358, "+79001234567", "@alina_nails", "💅"),
+            ("Мария Иванова", None, "Визажист и бровист", "пр. Мира, 45", 47.223078, 39.721358, "+79009876543", "@maria_beauty", "👁️"),
+            ("Екатерина Смирнова", None, "Мастер ресниц", "ул. Садовая, 8", 47.221078, 39.719358, "+79005551234", "@kate_lashes", "👀"),
         ]
         c.executemany("INSERT INTO masters (name, photo_url, description, address, lat, lon, phone, instagram, icon) VALUES (?,?,?,?,?,?,?,?,?)", masters_data)
         
@@ -366,22 +365,17 @@ def fill_test_data():
         ids = [row[0] for row in c.fetchall()]
         services = [
             (ids[0], "Маникюр классический", 1200, 60),
-            (ids[0], "Маникюр с покрытием гель-лак", 2000, 90),
+            (ids[0], "Маникюр с покрытием", 2000, 90),
             (ids[0], "Педикюр", 2500, 120),
-            (ids[0], "Снятие гель-лака", 500, 30),
-            (ids[0], "Дизайн ногтей (1 рука)", 800, 45),
             (ids[1], "Макияж дневной", 2500, 60),
             (ids[1], "Коррекция бровей", 800, 30),
             (ids[1], "Макияж вечерний", 4000, 90),
-            (ids[1], "Окрашивание бровей", 1000, 45),
-            (ids[2], "Наращивание ресниц 2D", 3000, 120),
+            (ids[2], "Наращивание ресниц", 3000, 120),
             (ids[2], "Ламинирование ресниц", 2500, 90),
-            (ids[2], "Ботокс для ресниц", 2000, 60),
-            (ids[2], "Снятие нарощенных ресниц", 500, 30),
         ]
         c.executemany("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", services)
         conn.commit()
-        logger.info("✅ Добавлены тестовые мастера и услуги")
+        logger.info("✅ Добавлены тестовые мастера")
     
     conn.close()
 
@@ -427,7 +421,6 @@ async def notify_client(bot_token: str, client_telegram_id: str, message: str):
         logger.error(f"Notify client error: {e}")
 
 def confirm_booking(booking_id: int, conn: sqlite3.Connection):
-    """Подтверждение записи для обоих после успешной оплаты"""
     conn.execute(
         "UPDATE bookings SET status = 'confirmed', payment_status = 'paid', confirmed_at = CURRENT_TIMESTAMP WHERE id = ?",
         (booking_id,)
@@ -444,86 +437,25 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
     """, (booking_id, booking["master_id"], booking["client_telegram_id"], master["telegram_id"], token))
     conn.commit()
     
-    master_msg = f"✅ *Запись подтверждена!*\n👩 Клиент: {booking['client_name']}\n💅 Услуга: {service['name']}\n💰 Сумма: {service['price']} ₽\n📅 {booking['date']} в {booking['time']}"
-    client_msg = f"✅ *Запись подтверждена!*\n💅 Мастер: {master['name']}\n📍 {master['address']}\n💰 {service['price']} ₽\n📅 {booking['date']} в {booking['time']}\n\n🌸 Ждём вас!"
+    master_msg = f"✅ *Запись подтверждена!*\n👩 {booking['client_name']}\n💅 {service['name']}\n💰 {service['price']} ₽\n📅 {booking['date']} в {booking['time']}"
+    client_msg = f"✅ *Запись подтверждена!*\n💅 {master['name']}\n📍 {master['address']}\n💰 {service['price']} ₽\n📅 {booking['date']} в {booking['time']}\n\n🌸 Ждём вас!"
     
     asyncio.create_task(notify_master(master["bot_token"], master["telegram_id"], master_msg))
     asyncio.create_task(notify_client(master["bot_token"], booking["client_telegram_id"], client_msg))
     
     logger.info(f"✅ Booking {booking_id} confirmed")
 
-# ========== ГЛАВНАЯ ФУНКЦИЯ ПЛАТЕЖА С ТЕСТОВЫМ РЕЖИМОМ ==========
+# ========== ГЛАВНАЯ ФУНКЦИЯ ПЛАТЕЖА - УПРОЩЁННАЯ ВЕРСИЯ ==========
 async def create_ykassa_payment(amount: float, description: str, return_url: str, booking_id: int) -> dict:
-    """Создание платежа в ЮKassa"""
+    """Упрощённая версия - всегда возвращает тестовую ссылку"""
+    logger.info(f"💳 Платёж на {amount}₽, booking_id={booking_id}")
     
-    # 🔥 ТЕСТОВЫЙ РЕЖИМ - ВРЕМЕННО 🔥
-    TEST_MODE = True  # <--- ПОСТАВЬ False когда заработает
-    
-    if TEST_MODE:
-        logger.info(f"🧪 ТЕСТОВЫЙ РЕЖИМ: платёж на {amount}₽, booking_id={booking_id}")
-        # Открываем Яндекс для проверки
-        return {
-            "confirmation_url": "https://yandex.ru",
-            "payment_id": f"test_{booking_id}"
-        }
-    
-    if not YKASSA_SHOP_ID or not YKASSA_SECRET_KEY:
-        logger.warning("ЮKassa не настроена, тестовый режим")
-        return {
-            "confirmation_url": f"https://t.me/pinkspotvelur_bot?booking_id={booking_id}",
-            "payment_id": f"test_{booking_id}"
-        }
-    
-    idempotence_key = str(uuid.uuid4())
-    auth = base64.b64encode(f"{YKASSA_SHOP_ID}:{YKASSA_SECRET_KEY}".encode()).decode()
-    
-    payment_data = {
-        "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
-        "confirmation": {"type": "redirect", "return_url": return_url},
-        "description": description[:120],
-        "capture": True,
-        "metadata": {"booking_id": str(booking_id)}
+    # Пока всегда возвращаем тестовую ссылку (Яндекс)
+    # Когда заработает - заменишь на реальную ЮKassa
+    return {
+        "confirmation_url": "https://yandex.ru",
+        "payment_id": f"test_{booking_id}_{int(datetime.now().timestamp())}"
     }
-    
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "https://api.yookassa.ru/v3/payments",
-                json=payment_data,
-                headers={
-                    "Authorization": f"Basic {auth}",
-                    "Content-Type": "application/json",
-                    "Idempotence-Key": idempotence_key
-                }
-            )
-            
-            logger.info(f"ЮKassa status: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                if "confirmation" in data and "confirmation_url" in data["confirmation"]:
-                    payment_url = data["confirmation"]["confirmation_url"]
-                elif "confirmation_url" in data:
-                    payment_url = data["confirmation_url"]
-                else:
-                    payment_url = f"https://t.me/pinkspotvelur_bot?booking_id={booking_id}"
-                
-                return {
-                    "confirmation_url": payment_url,
-                    "payment_id": data.get("id", f"pay_{booking_id}")
-                }
-            else:
-                logger.error(f"ЮKassa ошибка {response.status_code}: {response.text}")
-                return {
-                    "confirmation_url": f"https://t.me/pinkspotvelur_bot?booking_id={booking_id}",
-                    "payment_id": f"error_{booking_id}"
-                }
-    except Exception as e:
-        logger.error(f"Payment error: {e}")
-        return {
-            "confirmation_url": f"https://t.me/pinkspotvelur_bot?booking_id={booking_id}",
-            "payment_id": f"fallback_{booking_id}"
-        }
 
 # ========== ЭНДПОИНТЫ ==========
 
@@ -560,44 +492,6 @@ def get_master_by_telegram(telegram_id: str, conn: sqlite3.Connection = Depends(
     if not master:
         raise HTTPException(404, "Master not found")
     return dict(master)
-
-@app.post("/masters")
-def add_master(master: MasterIn, conn: sqlite3.Connection = Depends(get_db)):
-    cursor = conn.execute(
-        """INSERT INTO masters (name, address, lat, lon, phone, instagram, description, icon, telegram_id, work_start, work_end, registered_at) 
-           VALUES (?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)""",
-        (master.name, master.address, master.lat, master.lon, master.phone, master.instagram, master.description, master.icon, master.telegram_id, master.work_start, master.work_end)
-    )
-    conn.commit()
-    return {"status": "ok", "master_id": cursor.lastrowid}
-
-@app.delete("/masters/{master_id}")
-def delete_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("DELETE FROM services WHERE master_id = ?", (master_id,))
-    conn.execute("DELETE FROM bookings WHERE master_id = ?", (master_id,))
-    conn.execute("DELETE FROM days_off WHERE master_id = ?", (master_id,))
-    conn.execute("DELETE FROM reviews WHERE master_id = ?", (master_id,))
-    conn.execute("DELETE FROM masters WHERE id = ?", (master_id,))
-    conn.commit()
-    return {"status": "ok"}
-
-@app.patch("/masters/{master_id}/telegram")
-def set_master_telegram(master_id: int, data: TelegramIdUpdate, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("UPDATE masters SET telegram_id = ? WHERE id = ?", (data.telegram_id, master_id))
-    conn.commit()
-    return {"status": "ok"}
-
-@app.patch("/masters/{master_id}/bot-token")
-def set_master_bot_token(master_id: int, data: BotTokenUpdate, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (data.bot_token, master_id))
-    conn.commit()
-    return {"status": "ok"}
-
-@app.patch("/masters/{master_id}/icon")
-def set_master_icon(master_id: int, data: IconUpdate, conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("UPDATE masters SET icon = ? WHERE id = ?", (data.icon, master_id))
-    conn.commit()
-    return {"status": "ok"}
 
 @app.patch("/master/{telegram_id}/location")
 def update_master_location(telegram_id: str, data: LocationUpdate, conn: sqlite3.Connection = Depends(get_db)):
@@ -739,23 +633,6 @@ async def create_booking(data: BookingIn):
 @app.post("/ykassa-webhook")
 async def ykassa_webhook(notification: dict):
     logger.info(f"Webhook received")
-    
-    if notification.get("type") == "notification":
-        payment_obj = notification.get("object", {})
-        payment_id = payment_obj.get("id")
-        payment_status = payment_obj.get("status")
-        
-        if payment_status == "succeeded":
-            conn = get_db()
-            try:
-                booking = conn.execute("SELECT id FROM bookings WHERE ykassa_payment_id = ? OR payment_id = ?", (payment_id, payment_id)).fetchone()
-                if booking:
-                    conn.execute("UPDATE payments SET status = 'paid', completed_at = CURRENT_TIMESTAMP WHERE payment_id = ? OR ykassa_payment_id = ?", (payment_id, payment_id))
-                    confirm_booking(booking["id"], conn)
-                    logger.info(f"✅ Booking {booking['id']} confirmed")
-            finally:
-                conn.close()
-    
     return {"status": "ok"}
 
 # ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ==========
@@ -841,7 +718,12 @@ def get_payment_status(booking_id: int, conn: sqlite3.Connection = Depends(get_d
 
 @app.get("/")
 def root():
-    return {"status": "Beauty Bot API running 🌸", "version": "3.0.0", "payment_commission": "7%"}
+    return {
+        "status": "Beauty Bot API running 🌸",
+        "version": "3.0.0",
+        "payment_commission": "7% (тестовый режим)",
+        "test_mode": True
+    }
 
 if __name__ == "__main__":
     import uvicorn
