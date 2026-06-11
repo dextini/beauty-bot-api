@@ -26,8 +26,6 @@ YKASSA_RETURN_URL = os.getenv("YKASSA_RETURN_URL", "https://t.me/pinkspotvelur_b
 PAYMENT_COMMISSION = 0.07
 CLEANING_TIME = 15
 MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
-WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")
-SMS_API_KEY = os.getenv("SMS_API_KEY", "")
 
 # === ПУТЬ К БАЗЕ ДАННЫХ ===
 DB_PATH = "beauty.db"
@@ -92,9 +90,32 @@ class QuickReplyIn(BaseModel):
     title: str
     message: str
 
-class PortfolioIn(BaseModel):
-    photo_url: str
-    description: str = ""
+class MasterAdd(BaseModel):
+    name: str
+    address: str
+    lat: Optional[float] = 47.222078
+    lon: Optional[float] = 39.720358
+    phone: Optional[str] = ""
+    instagram: Optional[str] = ""
+    description: Optional[str] = ""
+    icon: Optional[str] = "💅"
+    work_start: Optional[str] = "09:00"
+    work_end: Optional[str] = "20:00"
+
+class TelegramIdAssign(BaseModel):
+    telegram_id: str
+
+class BotTokenAssign(BaseModel):
+    bot_token: str
+
+class IconAssign(BaseModel):
+    icon: str
+
+class PromocodeCreate(BaseModel):
+    code: str
+    discount: int = 10
+    expires_at: Optional[str] = None
+    uses_limit: int = 1
 
 # ========== БД ==========
 def init_db():
@@ -198,7 +219,18 @@ def init_db():
         FOREIGN KEY (master_id) REFERENCES masters(id)
     )""")
     
-    # ПРИНУДИТЕЛЬНОЕ ДОБАВЛЕНИЕ ВСЕХ НУЖНЫХ КОЛОНОК (для существующей БД)
+    # Таблица промокодов
+    c.execute("""CREATE TABLE IF NOT EXISTS promocodes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT UNIQUE,
+        discount INTEGER,
+        expires_at TEXT,
+        uses_limit INTEGER DEFAULT 1,
+        used_count INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    
+    # Добавляем недостающие колонки
     required_columns = {
         'deposit_amount': 'REAL DEFAULT 0',
         'total_amount': 'REAL DEFAULT 0',
@@ -213,10 +245,9 @@ def init_db():
         try:
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col_name} {col_type}")
             logger.info(f"✅ Добавлена колонка {col_name}")
-        except Exception as e:
-            logger.info(f"Колонка {col_name} уже есть: {e}")
+        except: pass
     
-    # Тестовые данные (только Алина Козлова в Ростове-на-Дону)
+    # Тестовые данные
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
         c.execute("INSERT INTO masters (name, address, lat, lon, phone, instagram, icon, work_start, work_end, telegram_id, bot_token) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -375,7 +406,7 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
             "payment_id": f"fallback_{booking_id}"
         }
 
-# ========== ЭНДПОИНТЫ ==========
+# ========== ЭНДПОИНТЫ ДЛЯ КЛИЕНТОВ ==========
 
 @app.get("/masters")
 def get_masters(conn=Depends(get_db)):
@@ -450,18 +481,15 @@ def get_slots(master_id: int, date: str, service_id: int, conn=Depends(get_db)):
 async def create_booking(data: BookingIn):
     conn = get_db()
     try:
-        # ПРЯМОЕ ДОБАВЛЕНИЕ КОЛОНОК (на случай если их нет)
+        # Принудительное добавление колонок
         try:
             conn.execute("ALTER TABLE bookings ADD COLUMN deposit_amount REAL DEFAULT 0")
-            logger.info("✅ deposit_amount добавлена")
         except: pass
         try:
             conn.execute("ALTER TABLE bookings ADD COLUMN total_amount REAL DEFAULT 0")
-            logger.info("✅ total_amount добавлена")
         except: pass
         try:
             conn.execute("ALTER TABLE bookings ADD COLUMN payment_id TEXT")
-            logger.info("✅ payment_id добавлена")
         except: pass
         conn.commit()
         
@@ -634,7 +662,7 @@ def get_favorites(client_telegram_id: str, conn: sqlite3.Connection = Depends(ge
     """, (client_telegram_id,)).fetchall()
     return [dict(f) for f in favorites]
 
-# ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ==========
+# ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ДЛЯ КЛИЕНТОВ ==========
 
 @app.get("/bookings/client/{telegram_id}")
 def get_client_bookings(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
@@ -736,6 +764,183 @@ def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends
     conn.commit()
     return {"status": "ok"}
 
+# ========== АДМИН-ПАНЕЛЬ ==========
+
+@app.post("/admin/add-master")
+def admin_add_master(data: MasterAdd, conn: sqlite3.Connection = Depends(get_db)):
+    """Добавление нового мастера"""
+    try:
+        cursor = conn.execute("""
+            INSERT INTO masters (name, address, lat, lon, phone, instagram, description, icon, work_start, work_end)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (data.name, data.address, data.lat, data.lon, data.phone, data.instagram, data.description, data.icon, data.work_start, data.work_end))
+        conn.commit()
+        master_id = cursor.lastrowid
+        logger.info(f"✅ Добавлен мастер: {data.name} (id: {master_id})")
+        return {"status": "ok", "master_id": master_id, "message": f"Мастер {data.name} добавлен"}
+    except Exception as e:
+        logger.error(f"Ошибка добавления мастера: {e}")
+        raise HTTPException(500, str(e))
+
+@app.patch("/admin/set-telegram/{master_id}")
+def admin_set_telegram(master_id: int, data: TelegramIdAssign, conn: sqlite3.Connection = Depends(get_db)):
+    """Назначение Telegram ID мастеру"""
+    try:
+        master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+        if not master:
+            raise HTTPException(404, f"Мастер с id {master_id} не найден")
+        
+        conn.execute("UPDATE masters SET telegram_id = ? WHERE id = ?", (data.telegram_id, master_id))
+        conn.commit()
+        logger.info(f"✅ Мастеру {master_id} назначен telegram_id: {data.telegram_id}")
+        return {"status": "ok", "message": f"telegram_id {data.telegram_id} назначен мастеру {master_id}"}
+    except Exception as e:
+        logger.error(f"Ошибка назначения telegram_id: {e}")
+        raise HTTPException(500, str(e))
+
+@app.patch("/admin/set-bot-token/{master_id}")
+def admin_set_bot_token(master_id: int, data: BotTokenAssign, conn: sqlite3.Connection = Depends(get_db)):
+    """Назначение Bot Token мастеру"""
+    try:
+        master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+        if not master:
+            raise HTTPException(404, f"Мастер с id {master_id} не найден")
+        
+        conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (data.bot_token, master_id))
+        conn.commit()
+        logger.info(f"✅ Мастеру {master_id} назначен bot_token")
+        return {"status": "ok", "message": f"Bot token назначен мастеру {master_id}"}
+    except Exception as e:
+        logger.error(f"Ошибка назначения bot_token: {e}")
+        raise HTTPException(500, str(e))
+
+@app.patch("/admin/set-icon/{master_id}")
+def admin_set_icon(master_id: int, data: IconAssign, conn: sqlite3.Connection = Depends(get_db)):
+    """Назначение иконки мастеру"""
+    try:
+        master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
+        if not master:
+            raise HTTPException(404, f"Мастер с id {master_id} не найден")
+        
+        conn.execute("UPDATE masters SET icon = ? WHERE id = ?", (data.icon, master_id))
+        conn.commit()
+        logger.info(f"✅ Мастеру {master_id} назначена иконка: {data.icon}")
+        return {"status": "ok", "message": f"Иконка {data.icon} назначена мастеру {master_id}"}
+    except Exception as e:
+        logger.error(f"Ошибка назначения иконки: {e}")
+        raise HTTPException(500, str(e))
+
+@app.get("/admin/masters")
+def admin_get_masters(conn: sqlite3.Connection = Depends(get_db)):
+    """Получение списка всех мастеров"""
+    try:
+        masters = conn.execute("""
+            SELECT id, name, telegram_id, phone, instagram, icon, lat, lon, work_start, work_end, rating 
+            FROM masters
+        """).fetchall()
+        return [dict(m) for m in masters]
+    except Exception as e:
+        logger.error(f"Ошибка получения списка мастеров: {e}")
+        raise HTTPException(500, str(e))
+
+@app.delete("/admin/delete-master/{master_id}")
+def admin_delete_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    """Удаление мастера и всех связанных данных"""
+    try:
+        master = conn.execute("SELECT name FROM masters WHERE id = ?", (master_id,)).fetchone()
+        if not master:
+            raise HTTPException(404, f"Мастер с id {master_id} не найден")
+        
+        # Удаляем связанные данные
+        conn.execute("DELETE FROM services WHERE master_id = ?", (master_id,))
+        conn.execute("DELETE FROM bookings WHERE master_id = ?", (master_id,))
+        conn.execute("DELETE FROM days_off WHERE master_id = ?", (master_id,))
+        conn.execute("DELETE FROM quick_replies WHERE master_id = ?", (master_id,))
+        conn.execute("DELETE FROM portfolio WHERE master_id = ?", (master_id,))
+        conn.execute("DELETE FROM favorites WHERE master_id = ?", (master_id,))
+        conn.execute("DELETE FROM blacklist WHERE master_id = ?", (master_id,))
+        conn.execute("DELETE FROM masters WHERE id = ?", (master_id,))
+        conn.commit()
+        
+        logger.info(f"✅ Удалён мастер: {master['name']} (id: {master_id})")
+        return {"status": "ok", "message": f"Мастер {master['name']} удалён"}
+    except Exception as e:
+        logger.error(f"Ошибка удаления мастера: {e}")
+        raise HTTPException(500, str(e))
+
+@app.get("/admin/stats")
+def admin_get_stats(conn: sqlite3.Connection = Depends(get_db)):
+    """Статистика для админ-панели"""
+    try:
+        masters_count = conn.execute("SELECT COUNT(*) FROM masters").fetchone()[0]
+        bookings_count = conn.execute("SELECT COUNT(*) FROM bookings").fetchone()[0]
+        users_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        confirmed_bookings = conn.execute("SELECT COUNT(*) FROM bookings WHERE status = 'confirmed'").fetchone()[0]
+        pending_bookings = conn.execute("SELECT COUNT(*) FROM bookings WHERE status = 'pending_payment'").fetchone()[0]
+        
+        revenue = conn.execute("""
+            SELECT SUM(s.price) FROM bookings b 
+            JOIN services s ON b.service_id = s.id 
+            WHERE b.status = 'confirmed'
+        """).fetchone()[0] or 0
+        
+        return {
+            "masters": masters_count,
+            "bookings": bookings_count,
+            "users": users_count,
+            "confirmed_bookings": confirmed_bookings,
+            "pending_bookings": pending_bookings,
+            "revenue": revenue
+        }
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики: {e}")
+        raise HTTPException(500, str(e))
+
+@app.post("/admin/create-promocode")
+def admin_create_promocode(data: PromocodeCreate, conn: sqlite3.Connection = Depends(get_db)):
+    """Создание промокода"""
+    try:
+        # Проверяем, существует ли уже такой промокод
+        existing = conn.execute("SELECT id FROM promocodes WHERE code = ?", (data.code,)).fetchone()
+        if existing:
+            raise HTTPException(400, f"Промокод {data.code} уже существует")
+        
+        conn.execute("""
+            INSERT INTO promocodes (code, discount, expires_at, uses_limit)
+            VALUES (?, ?, ?, ?)
+        """, (data.code, data.discount, data.expires_at, data.uses_limit))
+        conn.commit()
+        
+        logger.info(f"✅ Создан промокод: {data.code} (скидка {data.discount}%)")
+        return {"status": "ok", "message": f"Промокод {data.code} создан"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка создания промокода: {e}")
+        raise HTTPException(500, str(e))
+
+@app.get("/admin/promocodes")
+def admin_get_promocodes(conn: sqlite3.Connection = Depends(get_db)):
+    """Получение списка промокодов"""
+    try:
+        promocodes = conn.execute("SELECT * FROM promocodes ORDER BY created_at DESC").fetchall()
+        return [dict(p) for p in promocodes]
+    except Exception as e:
+        logger.error(f"Ошибка получения промокодов: {e}")
+        raise HTTPException(500, str(e))
+
+@app.delete("/admin/delete-promocode/{promocode_id}")
+def admin_delete_promocode(promocode_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    """Удаление промокода"""
+    try:
+        conn.execute("DELETE FROM promocodes WHERE id = ?", (promocode_id,))
+        conn.commit()
+        return {"status": "ok", "message": "Промокод удалён"}
+    except Exception as e:
+        logger.error(f"Ошибка удаления промокода: {e}")
+        raise HTTPException(500, str(e))
+
+# ========== ГЛАВНАЯ ==========
 @app.get("/")
 def root():
     return {"status": "Beauty Bot API running 🌸", "version": "3.0.0"}
