@@ -90,32 +90,19 @@ class QuickReplyIn(BaseModel):
     title: str
     message: str
 
-class MasterAdd(BaseModel):
-    name: str
-    address: str
-    lat: Optional[float] = 47.222078
-    lon: Optional[float] = 39.720358
-    phone: Optional[str] = ""
-    instagram: Optional[str] = ""
-    description: Optional[str] = ""
-    icon: Optional[str] = "💅"
-    work_start: Optional[str] = "09:00"
-    work_end: Optional[str] = "20:00"
+class MasterProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    instagram: Optional[str] = None
+    description: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    work_start: Optional[str] = None
+    work_end: Optional[str] = None
 
-class TelegramIdAssign(BaseModel):
+class AdminAddMaster(BaseModel):
     telegram_id: str
-
-class BotTokenAssign(BaseModel):
-    bot_token: str
-
-class IconAssign(BaseModel):
-    icon: str
-
-class PromocodeCreate(BaseModel):
-    code: str
-    discount: int = 10
-    expires_at: Optional[str] = None
-    uses_limit: int = 1
 
 # ========== БД ==========
 def init_db():
@@ -125,24 +112,41 @@ def init_db():
     # Таблица мастеров
     c.execute("""CREATE TABLE IF NOT EXISTS masters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT, address TEXT, lat REAL, lon REAL,
-        phone TEXT, instagram TEXT, telegram_id TEXT,
-        work_start TEXT DEFAULT '09:00', work_end TEXT DEFAULT '20:00',
-        bot_token TEXT, description TEXT, icon TEXT DEFAULT '💅', rating REAL DEFAULT 0
+        name TEXT DEFAULT '',
+        address TEXT DEFAULT '',
+        lat REAL DEFAULT 55.751244,
+        lon REAL DEFAULT 37.618423,
+        phone TEXT DEFAULT '',
+        instagram TEXT DEFAULT '',
+        telegram_id TEXT UNIQUE,
+        work_start TEXT DEFAULT '09:00',
+        work_end TEXT DEFAULT '20:00',
+        bot_token TEXT DEFAULT '',
+        description TEXT DEFAULT '',
+        icon TEXT DEFAULT '💅',
+        rating REAL DEFAULT 0
     )""")
     
     # Таблица услуг
     c.execute("""CREATE TABLE IF NOT EXISTS services (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        master_id INTEGER, name TEXT, price INTEGER, duration_min INTEGER
+        master_id INTEGER,
+        name TEXT,
+        price INTEGER,
+        duration_min INTEGER,
+        FOREIGN KEY (master_id) REFERENCES masters(id)
     )""")
     
     # Таблица записей
     c.execute("""CREATE TABLE IF NOT EXISTS bookings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        master_id INTEGER, service_id INTEGER,
-        client_name TEXT, client_telegram_id TEXT, client_phone TEXT,
-        date TEXT, time TEXT,
+        master_id INTEGER,
+        service_id INTEGER,
+        client_name TEXT,
+        client_telegram_id TEXT,
+        client_phone TEXT,
+        date TEXT,
+        time TEXT,
         status TEXT DEFAULT 'pending_payment',
         deposit_amount REAL DEFAULT 0,
         total_amount REAL DEFAULT 0,
@@ -152,33 +156,49 @@ def init_db():
         cancelled_at TEXT,
         reminder_24h_sent INTEGER DEFAULT 0,
         reminder_1h_sent INTEGER DEFAULT 0,
-        sms_sent INTEGER DEFAULT 0
+        sms_sent INTEGER DEFAULT 0,
+        FOREIGN KEY (master_id) REFERENCES masters(id),
+        FOREIGN KEY (service_id) REFERENCES services(id)
     )""")
     
     # Таблица выходных дней
     c.execute("""CREATE TABLE IF NOT EXISTS days_off (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        master_id INTEGER, date TEXT, UNIQUE(master_id, date)
+        master_id INTEGER,
+        date TEXT,
+        UNIQUE(master_id, date),
+        FOREIGN KEY (master_id) REFERENCES masters(id)
     )""")
     
     # Таблица чатов
     c.execute("""CREATE TABLE IF NOT EXISTS chats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        booking_id INTEGER UNIQUE, master_id INTEGER,
-        client_telegram_id TEXT, master_telegram_id TEXT, token TEXT UNIQUE
+        booking_id INTEGER UNIQUE,
+        master_id INTEGER,
+        client_telegram_id TEXT,
+        master_telegram_id TEXT,
+        token TEXT UNIQUE,
+        FOREIGN KEY (booking_id) REFERENCES bookings(id),
+        FOREIGN KEY (master_id) REFERENCES masters(id)
     )""")
     
     # Таблица сообщений чата
     c.execute("""CREATE TABLE IF NOT EXISTS chat_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        booking_id INTEGER, from_id TEXT, to_id TEXT,
-        message TEXT, is_read INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        booking_id INTEGER,
+        from_id TEXT,
+        to_id TEXT,
+        message TEXT,
+        is_read INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (booking_id) REFERENCES bookings(id)
     )""")
     
     # Таблица пользователей
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        telegram_id TEXT UNIQUE, registered_at TEXT DEFAULT CURRENT_TIMESTAMP
+        telegram_id TEXT UNIQUE,
+        registered_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
     # Таблица быстрых ответов
@@ -230,7 +250,7 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Добавляем недостающие колонки
+    # Добавляем недостающие колонки в bookings
     required_columns = {
         'deposit_amount': 'REAL DEFAULT 0',
         'total_amount': 'REAL DEFAULT 0',
@@ -247,26 +267,25 @@ def init_db():
             logger.info(f"✅ Добавлена колонка {col_name}")
         except: pass
     
-    # Тестовые данные
+    # Добавляем недостающие колонки в masters
+    try:
+        c.execute("ALTER TABLE masters ADD COLUMN bot_token TEXT DEFAULT ''")
+    except: pass
+    try:
+        c.execute("ALTER TABLE masters ADD COLUMN description TEXT DEFAULT ''")
+    except: pass
+    
+    # Тестовый мастер (Алина Козлова)
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
-        c.execute("INSERT INTO masters (name, address, lat, lon, phone, instagram, icon, work_start, work_end, telegram_id, bot_token) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                  ("Алина Козлова", "ул. Ленина, 12", 47.222078, 39.720358, "+79001234567", "@alina_nails", "💅", "09:00", "20:00", "868528632", MASTER_BOT_TOKEN))
+        c.execute("""INSERT INTO masters (name, address, lat, lon, phone, instagram, telegram_id, icon, work_start, work_end, bot_token, description) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  ("Алина Козлова", "ул. Ленина, 12", 47.222078, 39.720358, "+79001234567", "@alina_nails", "868528632", "💅", "09:00", "20:00", MASTER_BOT_TOKEN, "Мастер маникюра с 5-летним опытом"))
         c.execute("SELECT id FROM masters")
         master_id = c.fetchone()[0]
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Маникюр классический", 1200, 60))
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Маникюр с покрытием гель-лак", 2000, 90))
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Педикюр", 2500, 120))
-        
-        # Быстрые ответы
-        quick_replies = [
-            ("Цена", "💅 Стоимость услуги: {price} ₽"),
-            ("Адрес", "📍 Я нахожусь по адресу: {address}"),
-            ("Как добраться", "🚇 Ближайшая станция метро - Пушкинская"),
-            ("Продолжительность", "⏱️ Услуга займёт примерно {duration} минут"),
-        ]
-        for title, msg in quick_replies:
-            c.execute("INSERT INTO quick_replies (master_id, title, message) VALUES (?,?,?)", (master_id, title, msg))
     
     conn.commit()
     conn.close()
@@ -410,7 +429,7 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
 
 @app.get("/masters")
 def get_masters(conn=Depends(get_db)):
-    masters = conn.execute("SELECT * FROM masters").fetchall()
+    masters = conn.execute("SELECT * FROM masters WHERE name != '' AND address != ''").fetchall()
     result = []
     for m in masters:
         services = conn.execute("SELECT * FROM services WHERE master_id=?", (m["id"],)).fetchall()
@@ -566,7 +585,7 @@ async def ykassa_webhook(notification: dict):
                 conn.close()
     return {"status": "ok"}
 
-# ========== ОТМЕНА ЗАПИСИ (ТОЛЬКО МАСТЕР) ==========
+# ========== ОТМЕНА ЗАПИСИ ==========
 @app.patch("/bookings/{booking_id}/status")
 def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
@@ -590,6 +609,61 @@ def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection
         asyncio.create_task(send_telegram_message(booking["client_telegram_id"], client_msg))
     
     return {"status": "ok", "booking_id": booking_id, "new_status": status}
+
+# ========== ПРОФИЛЬ МАСТЕРА (ЗАПОЛНЕНИЕ ДАННЫХ) ==========
+@app.patch("/master/{telegram_id}/profile")
+def update_master_profile(telegram_id: str, data: MasterProfileUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    """Мастер заполняет свой профиль"""
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    
+    updates = []
+    params = []
+    
+    if data.name is not None:
+        updates.append("name = ?")
+        params.append(data.name)
+    if data.address is not None:
+        updates.append("address = ?")
+        params.append(data.address)
+    if data.phone is not None:
+        updates.append("phone = ?")
+        params.append(data.phone)
+    if data.instagram is not None:
+        updates.append("instagram = ?")
+        params.append(data.instagram)
+    if data.description is not None:
+        updates.append("description = ?")
+        params.append(data.description)
+    if data.lat is not None:
+        updates.append("lat = ?")
+        params.append(data.lat)
+    if data.lon is not None:
+        updates.append("lon = ?")
+        params.append(data.lon)
+    if data.work_start is not None:
+        updates.append("work_start = ?")
+        params.append(data.work_start)
+    if data.work_end is not None:
+        updates.append("work_end = ?")
+        params.append(data.work_end)
+    
+    if updates:
+        params.append(master["id"])
+        conn.execute(f"UPDATE masters SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+        logger.info(f"✅ Мастер {telegram_id} обновил профиль")
+    
+    return {"status": "ok", "message": "Профиль обновлён"}
+
+@app.get("/master/{telegram_id}/profile")
+def get_master_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    """Получение профиля мастера для редактирования"""
+    master = conn.execute("SELECT * FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    return dict(master)
 
 # ========== ШАБЛОНЫ ОТВЕТОВ ==========
 @app.post("/master/{telegram_id}/quick-replies")
@@ -628,7 +702,7 @@ async def add_portfolio_photo(telegram_id: str, photo_url: str = Form(...), desc
     conn.execute("INSERT INTO portfolio (master_id, photo_url, description) VALUES (?,?,?)",
                 (master["id"], photo_url, description))
     conn.commit()
-    return {"status": "ok", "message": "Фото добавлено в портфолио"}
+    return {"status": "ok"}
 
 @app.delete("/master/{telegram_id}/portfolio/{photo_id}")
 def delete_portfolio_photo(telegram_id: str, photo_id: int, conn: sqlite3.Connection = Depends(get_db)):
@@ -658,11 +732,11 @@ def get_favorites(client_telegram_id: str, conn: sqlite3.Connection = Depends(ge
     favorites = conn.execute("""
         SELECT m.* FROM masters m
         JOIN favorites f ON m.id = f.master_id
-        WHERE f.client_telegram_id = ?
+        WHERE f.client_telegram_id = ? AND m.name != '' AND m.address != ''
     """, (client_telegram_id,)).fetchall()
     return [dict(f) for f in favorites]
 
-# ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ДЛЯ КЛИЕНТОВ ==========
+# ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ==========
 
 @app.get("/bookings/client/{telegram_id}")
 def get_client_bookings(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
@@ -764,70 +838,41 @@ def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends
     conn.commit()
     return {"status": "ok"}
 
-# ========== АДМИН-ПАНЕЛЬ ==========
+# ========== АДМИН-ПАНЕЛЬ (УПРОЩЁННАЯ) ==========
 
 @app.post("/admin/add-master")
-def admin_add_master(data: MasterAdd, conn: sqlite3.Connection = Depends(get_db)):
-    """Добавление нового мастера"""
+def admin_add_master(data: AdminAddMaster, conn: sqlite3.Connection = Depends(get_db)):
+    """Добавление мастера только по Telegram ID"""
     try:
+        telegram_id = data.telegram_id
+        
+        if not telegram_id:
+            raise HTTPException(400, "Telegram ID обязателен")
+        
+        # Проверяем, не существует ли уже такой мастер
+        existing = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
+        if existing:
+            raise HTTPException(400, f"Мастер с Telegram ID {telegram_id} уже существует")
+        
+        # Создаём мастера с минимальными данными
         cursor = conn.execute("""
-            INSERT INTO masters (name, address, lat, lon, phone, instagram, description, icon, work_start, work_end)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (data.name, data.address, data.lat, data.lon, data.phone, data.instagram, data.description, data.icon, data.work_start, data.work_end))
+            INSERT INTO masters (telegram_id, name, address, lat, lon, phone, instagram, description, icon, work_start, work_end, bot_token)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (telegram_id, "Новый мастер", "", 55.751244, 37.618423, "", "", "", "💅", "09:00", "20:00", ""))
         conn.commit()
         master_id = cursor.lastrowid
-        logger.info(f"✅ Добавлен мастер: {data.name} (id: {master_id})")
-        return {"status": "ok", "master_id": master_id, "message": f"Мастер {data.name} добавлен"}
+        
+        logger.info(f"✅ Добавлен мастер с telegram_id: {telegram_id} (id: {master_id})")
+        
+        return {
+            "status": "ok", 
+            "master_id": master_id, 
+            "message": f"Мастер с Telegram ID {telegram_id} добавлен"
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Ошибка добавления мастера: {e}")
-        raise HTTPException(500, str(e))
-
-@app.patch("/admin/set-telegram/{master_id}")
-def admin_set_telegram(master_id: int, data: TelegramIdAssign, conn: sqlite3.Connection = Depends(get_db)):
-    """Назначение Telegram ID мастеру"""
-    try:
-        master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
-        if not master:
-            raise HTTPException(404, f"Мастер с id {master_id} не найден")
-        
-        conn.execute("UPDATE masters SET telegram_id = ? WHERE id = ?", (data.telegram_id, master_id))
-        conn.commit()
-        logger.info(f"✅ Мастеру {master_id} назначен telegram_id: {data.telegram_id}")
-        return {"status": "ok", "message": f"telegram_id {data.telegram_id} назначен мастеру {master_id}"}
-    except Exception as e:
-        logger.error(f"Ошибка назначения telegram_id: {e}")
-        raise HTTPException(500, str(e))
-
-@app.patch("/admin/set-bot-token/{master_id}")
-def admin_set_bot_token(master_id: int, data: BotTokenAssign, conn: sqlite3.Connection = Depends(get_db)):
-    """Назначение Bot Token мастеру"""
-    try:
-        master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
-        if not master:
-            raise HTTPException(404, f"Мастер с id {master_id} не найден")
-        
-        conn.execute("UPDATE masters SET bot_token = ? WHERE id = ?", (data.bot_token, master_id))
-        conn.commit()
-        logger.info(f"✅ Мастеру {master_id} назначен bot_token")
-        return {"status": "ok", "message": f"Bot token назначен мастеру {master_id}"}
-    except Exception as e:
-        logger.error(f"Ошибка назначения bot_token: {e}")
-        raise HTTPException(500, str(e))
-
-@app.patch("/admin/set-icon/{master_id}")
-def admin_set_icon(master_id: int, data: IconAssign, conn: sqlite3.Connection = Depends(get_db)):
-    """Назначение иконки мастеру"""
-    try:
-        master = conn.execute("SELECT id FROM masters WHERE id = ?", (master_id,)).fetchone()
-        if not master:
-            raise HTTPException(404, f"Мастер с id {master_id} не найден")
-        
-        conn.execute("UPDATE masters SET icon = ? WHERE id = ?", (data.icon, master_id))
-        conn.commit()
-        logger.info(f"✅ Мастеру {master_id} назначена иконка: {data.icon}")
-        return {"status": "ok", "message": f"Иконка {data.icon} назначена мастеру {master_id}"}
-    except Exception as e:
-        logger.error(f"Ошибка назначения иконки: {e}")
         raise HTTPException(500, str(e))
 
 @app.get("/admin/masters")
@@ -835,7 +880,7 @@ def admin_get_masters(conn: sqlite3.Connection = Depends(get_db)):
     """Получение списка всех мастеров"""
     try:
         masters = conn.execute("""
-            SELECT id, name, telegram_id, phone, instagram, icon, lat, lon, work_start, work_end, rating 
+            SELECT id, name, telegram_id, phone, instagram, icon, rating 
             FROM masters
         """).fetchall()
         return [dict(m) for m in masters]
@@ -863,7 +908,7 @@ def admin_delete_master(master_id: int, conn: sqlite3.Connection = Depends(get_d
         conn.commit()
         
         logger.info(f"✅ Удалён мастер: {master['name']} (id: {master_id})")
-        return {"status": "ok", "message": f"Мастер {master['name']} удалён"}
+        return {"status": "ok", "message": f"Мастер удалён"}
     except Exception as e:
         logger.error(f"Ошибка удаления мастера: {e}")
         raise HTTPException(500, str(e))
@@ -897,22 +942,29 @@ def admin_get_stats(conn: sqlite3.Connection = Depends(get_db)):
         raise HTTPException(500, str(e))
 
 @app.post("/admin/create-promocode")
-def admin_create_promocode(data: PromocodeCreate, conn: sqlite3.Connection = Depends(get_db)):
+def admin_create_promocode(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     """Создание промокода"""
     try:
-        # Проверяем, существует ли уже такой промокод
-        existing = conn.execute("SELECT id FROM promocodes WHERE code = ?", (data.code,)).fetchone()
+        code = data.get("code")
+        discount = data.get("discount", 10)
+        expires_at = data.get("expires_at")
+        uses_limit = data.get("uses_limit", 1)
+        
+        if not code:
+            raise HTTPException(400, "code обязателен")
+        
+        existing = conn.execute("SELECT id FROM promocodes WHERE code = ?", (code,)).fetchone()
         if existing:
-            raise HTTPException(400, f"Промокод {data.code} уже существует")
+            raise HTTPException(400, f"Промокод {code} уже существует")
         
         conn.execute("""
             INSERT INTO promocodes (code, discount, expires_at, uses_limit)
             VALUES (?, ?, ?, ?)
-        """, (data.code, data.discount, data.expires_at, data.uses_limit))
+        """, (code, discount, expires_at, uses_limit))
         conn.commit()
         
-        logger.info(f"✅ Создан промокод: {data.code} (скидка {data.discount}%)")
-        return {"status": "ok", "message": f"Промокод {data.code} создан"}
+        logger.info(f"✅ Создан промокод: {code}")
+        return {"status": "ok", "message": f"Промокод {code} создан"}
     except HTTPException:
         raise
     except Exception as e:
