@@ -21,14 +21,14 @@ app = FastAPI(title="Beauty Bot API")
 
 # === КОНФИГУРАЦИЯ ===
 YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1368786")
-YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "live_aRHBYSr1irUAO8_dvzZCmQCih-vTF0q0NFfSvW5OOcs")
+YKASSA_SECRET_KEY = "live_aRHBYSr1irUAO8_dvzZCmQCih-vTF0q0NFfSvW5OOcs"
 YKASSA_RETURN_URL = os.getenv("YKASSA_RETURN_URL", "https://t.me/pinkspotvelur_bot")
 PAYMENT_COMMISSION = 0.07
 CLEANING_TIME = 15
 MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 
 # === ПУТЬ К БАЗЕ ===
-DB_PATH = "beauty.db"
+DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
 
 # === CORS ===
 app.add_middleware(
