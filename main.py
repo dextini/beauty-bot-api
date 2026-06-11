@@ -101,9 +101,6 @@ class MasterProfileUpdate(BaseModel):
     work_start: Optional[str] = None
     work_end: Optional[str] = None
 
-class AdminAddMaster(BaseModel):
-    telegram_id: str
-
 # ========== БД ==========
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -239,18 +236,7 @@ def init_db():
         FOREIGN KEY (master_id) REFERENCES masters(id)
     )""")
     
-    # Таблица промокодов
-    c.execute("""CREATE TABLE IF NOT EXISTS promocodes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        code TEXT UNIQUE,
-        discount INTEGER,
-        expires_at TEXT,
-        uses_limit INTEGER DEFAULT 1,
-        used_count INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )""")
-    
-    # Добавляем недостающие колонки в bookings
+    # Добавляем недостающие колонки
     required_columns = {
         'deposit_amount': 'REAL DEFAULT 0',
         'total_amount': 'REAL DEFAULT 0',
@@ -264,10 +250,9 @@ def init_db():
     for col_name, col_type in required_columns.items():
         try:
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col_name} {col_type}")
-            logger.info(f"✅ Добавлена колонка {col_name}")
         except: pass
     
-    # Добавляем недостающие колонки в masters
+    # Добавляем колонки в masters если нет
     try:
         c.execute("ALTER TABLE masters ADD COLUMN bot_token TEXT DEFAULT ''")
     except: pass
@@ -276,12 +261,12 @@ def init_db():
     except: pass
     
     # Тестовый мастер (Алина Козлова)
-    c.execute("SELECT COUNT(*) FROM masters")
+    c.execute("SELECT COUNT(*) FROM masters WHERE telegram_id = '868528632'")
     if c.fetchone()[0] == 0:
         c.execute("""INSERT INTO masters (name, address, lat, lon, phone, instagram, telegram_id, icon, work_start, work_end, bot_token, description) 
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                   ("Алина Козлова", "ул. Ленина, 12", 47.222078, 39.720358, "+79001234567", "@alina_nails", "868528632", "💅", "09:00", "20:00", MASTER_BOT_TOKEN, "Мастер маникюра с 5-летним опытом"))
-        c.execute("SELECT id FROM masters")
+        c.execute("SELECT id FROM masters WHERE telegram_id = '868528632'")
         master_id = c.fetchone()[0]
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Маникюр классический", 1200, 60))
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Маникюр с покрытием гель-лак", 2000, 90))
@@ -350,7 +335,6 @@ async def send_telegram_message(chat_id: str, message: str, parse_mode: str = "M
                 f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
                 json={"chat_id": chat_id, "text": message, "parse_mode": parse_mode}
             )
-            logger.info(f"✅ Сообщение отправлено в Telegram: {chat_id}")
     except Exception as e:
         logger.error(f"❌ Ошибка отправки в Telegram: {e}")
 
@@ -367,8 +351,8 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
                 (booking_id, master["id"], booking["client_telegram_id"], master["telegram_id"], token))
     conn.commit()
     
-    master_msg = f"🌸 *НОВАЯ ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸\n\n✅ Статус: Оплачен\n👩 Клиент: {booking['client_name']}\n📞 Телефон: {booking['client_phone'] or 'не указан'}\n💅 Услуга: {service['name']}\n💰 Стоимость услуги: {service['price']} ₽\n💸 Депозит 7%: {booking['deposit_amount']} ₽\n📅 Дата: {booking['date']}\n🕐 Время: {booking['time']}"
-    client_msg = f"🌸 *ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸\n\n✅ Статус: Подтверждено\n💅 Мастер: {master['name']}\n📍 Адрес: {master['address']}\n💅 Услуга: {service['name']}\n💰 Стоимость: {service['price']} ₽\n💸 Оплачено (депозит 7%): {booking['deposit_amount']} ₽\n💎 Остаток на месте: {service['price']} ₽\n📅 Дата: {booking['date']}\n🕐 Время: {booking['time']}"
+    master_msg = f"🌸 *НОВАЯ ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸\n\n✅ Статус: Оплачен\n👩 Клиент: {booking['client_name']}\n📞 Телефон: {booking['client_phone'] or 'не указан'}\n💅 Услуга: {service['name']}\n💰 Стоимость: {service['price']} ₽\n💸 Депозит 7%: {booking['deposit_amount']} ₽\n📅 Дата: {booking['date']}\n🕐 Время: {booking['time']}"
+    client_msg = f"🌸 *ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸\n\n✅ Статус: Подтверждено\n💅 Мастер: {master['name']}\n📍 Адрес: {master['address']}\n💅 Услуга: {service['name']}\n💰 Стоимость: {service['price']} ₽\n💸 Оплачено: {booking['deposit_amount']} ₽\n💎 Остаток: {service['price']} ₽\n📅 Дата: {booking['date']}\n🕐 Время: {booking['time']}"
     
     asyncio.create_task(send_telegram_message(master["telegram_id"], master_msg))
     asyncio.create_task(send_telegram_message(booking["client_telegram_id"], client_msg))
@@ -376,7 +360,6 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
 
 async def create_ykassa_payment(amount: float, description: str, return_url: str, booking_id: int) -> dict:
     if not YKASSA_SHOP_ID or not YKASSA_SECRET_KEY:
-        logger.warning("ЮKassa не настроена, тестовый режим")
         return {
             "confirmation_url": "https://yandex.ru",
             "payment_id": f"test_{booking_id}"
@@ -407,19 +390,16 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
             
             if response.status_code == 200:
                 data = response.json()
-                logger.info(f"✅ Платёж создан: {data['id']}")
                 return {
                     "confirmation_url": data["confirmation"]["confirmation_url"],
                     "payment_id": data["id"]
                 }
             else:
-                logger.error(f"ЮKassa ошибка: {response.text}")
                 return {
                     "confirmation_url": "https://yandex.ru",
                     "payment_id": f"error_{booking_id}"
                 }
     except Exception as e:
-        logger.error(f"Payment error: {e}")
         return {
             "confirmation_url": "https://yandex.ru",
             "payment_id": f"fallback_{booking_id}"
@@ -501,15 +481,10 @@ async def create_booking(data: BookingIn):
     conn = get_db()
     try:
         # Принудительное добавление колонок
-        try:
-            conn.execute("ALTER TABLE bookings ADD COLUMN deposit_amount REAL DEFAULT 0")
-        except: pass
-        try:
-            conn.execute("ALTER TABLE bookings ADD COLUMN total_amount REAL DEFAULT 0")
-        except: pass
-        try:
-            conn.execute("ALTER TABLE bookings ADD COLUMN payment_id TEXT")
-        except: pass
+        for col in ['deposit_amount', 'total_amount', 'payment_id']:
+            try:
+                conn.execute(f"ALTER TABLE bookings ADD COLUMN {col} REAL DEFAULT 0" if col != 'payment_id' else f"ALTER TABLE bookings ADD COLUMN {col} TEXT")
+            except: pass
         conn.commit()
         
         master = conn.execute("SELECT * FROM masters WHERE id=?", (data.master_id,)).fetchone()
@@ -535,11 +510,11 @@ async def create_booking(data: BookingIn):
         conn.commit()
         booking_id = cur.lastrowid
         
-        logger.info(f"📝 Бронь {booking_id}: {data.client_name} -> {service['name']} | Услуга: {service['price']} ₽ | Депозит 7%: {deposit_amount} ₽")
+        logger.info(f"📝 Бронь {booking_id}: {data.client_name} -> {service['name']} | {service['price']} ₽ | Депозит: {deposit_amount} ₽")
         
         payment = await create_ykassa_payment(
             amount=deposit_amount,
-            description=f"Бронь услуги {service['name']} (депозит {deposit_amount}₽, остаток {service['price']}₽ мастеру)",
+            description=f"Бронь {service['name']} (депозит {deposit_amount}₽)",
             return_url=f"{YKASSA_RETURN_URL}?booking_id={booking_id}",
             booking_id=booking_id
         )
@@ -547,7 +522,7 @@ async def create_booking(data: BookingIn):
         conn.execute("UPDATE bookings SET payment_id=? WHERE id=?", (payment["payment_id"], booking_id))
         conn.commit()
         
-        master_msg = f"💳 *НОВАЯ ЗАЯВКА (ОЖИДАЕТ ОПЛАТЫ)* 💳\n\n👩 Клиент: {data.client_name}\n📞 Телефон: {data.client_phone or 'не указан'}\n💅 Услуга: {service['name']}\n💰 Стоимость услуги: {service['price']} ₽\n💸 Депозит 7%: {deposit_amount} ₽\n📅 Дата: {data.date}\n🕐 Время: {data.time}"
+        master_msg = f"💳 *НОВАЯ ЗАЯВКА* 💳\n\n👩 {data.client_name}\n📞 {data.client_phone or 'не указан'}\n💅 {service['name']}\n💰 {service['price']} ₽\n💸 Депозит: {deposit_amount} ₽\n📅 {data.date} в {data.time}"
         asyncio.create_task(send_telegram_message(master["telegram_id"], master_msg))
         
         return {
@@ -580,7 +555,7 @@ async def ykassa_webhook(notification: dict):
                 booking = conn.execute("SELECT id FROM bookings WHERE payment_id=?", (payment_id,)).fetchone()
                 if booking:
                     confirm_booking(booking["id"], conn)
-                    logger.info(f"✅ Платёж {payment_id} успешен, запись {booking['id']} подтверждена")
+                    logger.info(f"✅ Платёж {payment_id} успешен")
             finally:
                 conn.close()
     return {"status": "ok"}
@@ -590,10 +565,10 @@ async def ykassa_webhook(notification: dict):
 def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
     if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
+        raise HTTPException(404, "Booking not found")
     
     if status not in ["confirmed", "cancelled"]:
-        raise HTTPException(status_code=400, detail="Invalid status")
+        raise HTTPException(400, "Invalid status")
     
     conn.execute("UPDATE bookings SET status=? WHERE id=?", (status, booking_id))
     if status == "cancelled":
@@ -605,15 +580,14 @@ def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection
         master = conn.execute("SELECT * FROM masters WHERE id=?", (booking["master_id"],)).fetchone()
         service = conn.execute("SELECT * FROM services WHERE id=?", (booking["service_id"],)).fetchone()
         
-        client_msg = f"❌ *Запись отменена* мастером\n\n📅 Дата: {booking['date']}\n🕐 Время: {booking['time']}\n💅 Услуга: {service['name']}\n\n💸 Депозит будет возвращён в течение 3-7 дней."
+        client_msg = f"❌ *Запись отменена*\n\n📅 {booking['date']} в {booking['time']}\n💅 {service['name']}\n\n💸 Депозит вернётся в течение 3-7 дней."
         asyncio.create_task(send_telegram_message(booking["client_telegram_id"], client_msg))
     
-    return {"status": "ok", "booking_id": booking_id, "new_status": status}
+    return {"status": "ok"}
 
-# ========== ПРОФИЛЬ МАСТЕРА (ЗАПОЛНЕНИЕ ДАННЫХ) ==========
+# ========== ПРОФИЛЬ МАСТЕРА ==========
 @app.patch("/master/{telegram_id}/profile")
 def update_master_profile(telegram_id: str, data: MasterProfileUpdate, conn: sqlite3.Connection = Depends(get_db)):
-    """Мастер заполняет свой профиль"""
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
@@ -653,13 +627,11 @@ def update_master_profile(telegram_id: str, data: MasterProfileUpdate, conn: sql
         params.append(master["id"])
         conn.execute(f"UPDATE masters SET {', '.join(updates)} WHERE id = ?", params)
         conn.commit()
-        logger.info(f"✅ Мастер {telegram_id} обновил профиль")
     
     return {"status": "ok", "message": "Профиль обновлён"}
 
 @app.get("/master/{telegram_id}/profile")
 def get_master_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Получение профиля мастера для редактирования"""
     master = conn.execute("SELECT * FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
@@ -713,7 +685,7 @@ def delete_portfolio_photo(telegram_id: str, photo_id: int, conn: sqlite3.Connec
     conn.commit()
     return {"status": "ok"}
 
-# ========== ИЗБРАННЫЕ МАСТЕРА ==========
+# ========== ИЗБРАННОЕ ==========
 @app.post("/favorites/{master_id}")
 def add_favorite(master_id: int, client_telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     conn.execute("INSERT OR IGNORE INTO favorites (client_telegram_id, master_id) VALUES (?,?)",
@@ -764,7 +736,7 @@ def get_stats(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     confirmed = conn.execute("SELECT COUNT(*) FROM bookings WHERE master_id=? AND status='confirmed'", (master["id"],)).fetchone()[0]
     pending = conn.execute("SELECT COUNT(*) FROM bookings WHERE master_id=? AND status='pending_payment'", (master["id"],)).fetchone()[0]
     revenue = conn.execute("SELECT SUM(price) FROM bookings b JOIN services s ON b.service_id=s.id WHERE b.master_id=? AND b.status='confirmed'", (master["id"],)).fetchone()[0] or 0
-    return {"completed_bookings": confirmed, "pending_payment": pending, "revenue": revenue}
+    return {"completed": confirmed, "pending": pending, "revenue": revenue}
 
 @app.post("/chat/send")
 def send_message(data: MessageIn, conn: sqlite3.Connection = Depends(get_db)):
@@ -841,156 +813,83 @@ def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends
 # ========== АДМИН-ПАНЕЛЬ (УПРОЩЁННАЯ) ==========
 
 @app.post("/admin/add-master")
-def admin_add_master(data: AdminAddMaster, conn: sqlite3.Connection = Depends(get_db)):
-    """Добавление мастера только по Telegram ID"""
-    try:
-        telegram_id = data.telegram_id
-        
-        if not telegram_id:
-            raise HTTPException(400, "Telegram ID обязателен")
-        
-        # Проверяем, не существует ли уже такой мастер
-        existing = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
-        if existing:
-            raise HTTPException(400, f"Мастер с Telegram ID {telegram_id} уже существует")
-        
-        # Создаём мастера с минимальными данными
-        cursor = conn.execute("""
-            INSERT INTO masters (telegram_id, name, address, lat, lon, phone, instagram, description, icon, work_start, work_end, bot_token)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (telegram_id, "Новый мастер", "", 55.751244, 37.618423, "", "", "", "💅", "09:00", "20:00", ""))
-        conn.commit()
-        master_id = cursor.lastrowid
-        
-        logger.info(f"✅ Добавлен мастер с telegram_id: {telegram_id} (id: {master_id})")
-        
-        return {
-            "status": "ok", 
-            "master_id": master_id, 
-            "message": f"Мастер с Telegram ID {telegram_id} добавлен"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Ошибка добавления мастера: {e}")
-        raise HTTPException(500, str(e))
+def admin_add_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    """Добавление мастера - только Telegram ID"""
+    telegram_id = data.get("telegram_id", "").strip()
+    
+    if not telegram_id:
+        raise HTTPException(400, "Telegram ID обязателен")
+    
+    existing = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    if existing:
+        raise HTTPException(400, f"Мастер с Telegram ID {telegram_id} уже существует")
+    
+    conn.execute("""
+        INSERT INTO masters (telegram_id, name, address, lat, lon, phone, instagram, description, icon, work_start, work_end, bot_token)
+        VALUES (?, 'Новый мастер', '', 55.751244, 37.618423, '', '', '', '💅', '09:00', '20:00', '')
+    """, (telegram_id,))
+    conn.commit()
+    
+    master_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    
+    return {
+        "status": "ok",
+        "master_id": master_id,
+        "telegram_id": telegram_id,
+        "message": f"Мастер с Telegram ID {telegram_id} добавлен"
+    }
 
 @app.get("/admin/masters")
 def admin_get_masters(conn: sqlite3.Connection = Depends(get_db)):
-    """Получение списка всех мастеров"""
-    try:
-        masters = conn.execute("""
-            SELECT id, name, telegram_id, phone, instagram, icon, rating 
-            FROM masters
-        """).fetchall()
-        return [dict(m) for m in masters]
-    except Exception as e:
-        logger.error(f"Ошибка получения списка мастеров: {e}")
-        raise HTTPException(500, str(e))
+    """Список всех мастеров"""
+    masters = conn.execute("""
+        SELECT id, telegram_id, name, phone, icon,
+               CASE WHEN name = 'Новый мастер' OR name = '' THEN 'Не заполнен' ELSE 'Заполнен' END as status
+        FROM masters
+        ORDER BY id DESC
+    """).fetchall()
+    return [dict(m) for m in masters]
 
 @app.delete("/admin/delete-master/{master_id}")
 def admin_delete_master(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    """Удаление мастера и всех связанных данных"""
-    try:
-        master = conn.execute("SELECT name FROM masters WHERE id = ?", (master_id,)).fetchone()
-        if not master:
-            raise HTTPException(404, f"Мастер с id {master_id} не найден")
-        
-        # Удаляем связанные данные
-        conn.execute("DELETE FROM services WHERE master_id = ?", (master_id,))
-        conn.execute("DELETE FROM bookings WHERE master_id = ?", (master_id,))
-        conn.execute("DELETE FROM days_off WHERE master_id = ?", (master_id,))
-        conn.execute("DELETE FROM quick_replies WHERE master_id = ?", (master_id,))
-        conn.execute("DELETE FROM portfolio WHERE master_id = ?", (master_id,))
-        conn.execute("DELETE FROM favorites WHERE master_id = ?", (master_id,))
-        conn.execute("DELETE FROM blacklist WHERE master_id = ?", (master_id,))
-        conn.execute("DELETE FROM masters WHERE id = ?", (master_id,))
-        conn.commit()
-        
-        logger.info(f"✅ Удалён мастер: {master['name']} (id: {master_id})")
-        return {"status": "ok", "message": f"Мастер удалён"}
-    except Exception as e:
-        logger.error(f"Ошибка удаления мастера: {e}")
-        raise HTTPException(500, str(e))
+    """Удаление мастера"""
+    master = conn.execute("SELECT id, name FROM masters WHERE id = ?", (master_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    
+    conn.execute("DELETE FROM services WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM bookings WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM days_off WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM quick_replies WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM portfolio WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM favorites WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM blacklist WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM masters WHERE id = ?", (master_id,))
+    conn.commit()
+    
+    return {"status": "ok", "message": "Мастер удалён"}
 
 @app.get("/admin/stats")
 def admin_get_stats(conn: sqlite3.Connection = Depends(get_db)):
-    """Статистика для админ-панели"""
-    try:
-        masters_count = conn.execute("SELECT COUNT(*) FROM masters").fetchone()[0]
-        bookings_count = conn.execute("SELECT COUNT(*) FROM bookings").fetchone()[0]
-        users_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        confirmed_bookings = conn.execute("SELECT COUNT(*) FROM bookings WHERE status = 'confirmed'").fetchone()[0]
-        pending_bookings = conn.execute("SELECT COUNT(*) FROM bookings WHERE status = 'pending_payment'").fetchone()[0]
-        
-        revenue = conn.execute("""
-            SELECT SUM(s.price) FROM bookings b 
-            JOIN services s ON b.service_id = s.id 
-            WHERE b.status = 'confirmed'
-        """).fetchone()[0] or 0
-        
-        return {
-            "masters": masters_count,
-            "bookings": bookings_count,
-            "users": users_count,
-            "confirmed_bookings": confirmed_bookings,
-            "pending_bookings": pending_bookings,
-            "revenue": revenue
-        }
-    except Exception as e:
-        logger.error(f"Ошибка получения статистики: {e}")
-        raise HTTPException(500, str(e))
-
-@app.post("/admin/create-promocode")
-def admin_create_promocode(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Создание промокода"""
-    try:
-        code = data.get("code")
-        discount = data.get("discount", 10)
-        expires_at = data.get("expires_at")
-        uses_limit = data.get("uses_limit", 1)
-        
-        if not code:
-            raise HTTPException(400, "code обязателен")
-        
-        existing = conn.execute("SELECT id FROM promocodes WHERE code = ?", (code,)).fetchone()
-        if existing:
-            raise HTTPException(400, f"Промокод {code} уже существует")
-        
-        conn.execute("""
-            INSERT INTO promocodes (code, discount, expires_at, uses_limit)
-            VALUES (?, ?, ?, ?)
-        """, (code, discount, expires_at, uses_limit))
-        conn.commit()
-        
-        logger.info(f"✅ Создан промокод: {code}")
-        return {"status": "ok", "message": f"Промокод {code} создан"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Ошибка создания промокода: {e}")
-        raise HTTPException(500, str(e))
-
-@app.get("/admin/promocodes")
-def admin_get_promocodes(conn: sqlite3.Connection = Depends(get_db)):
-    """Получение списка промокодов"""
-    try:
-        promocodes = conn.execute("SELECT * FROM promocodes ORDER BY created_at DESC").fetchall()
-        return [dict(p) for p in promocodes]
-    except Exception as e:
-        logger.error(f"Ошибка получения промокодов: {e}")
-        raise HTTPException(500, str(e))
-
-@app.delete("/admin/delete-promocode/{promocode_id}")
-def admin_delete_promocode(promocode_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    """Удаление промокода"""
-    try:
-        conn.execute("DELETE FROM promocodes WHERE id = ?", (promocode_id,))
-        conn.commit()
-        return {"status": "ok", "message": "Промокод удалён"}
-    except Exception as e:
-        logger.error(f"Ошибка удаления промокода: {e}")
-        raise HTTPException(500, str(e))
+    """Статистика"""
+    masters = conn.execute("SELECT COUNT(*) FROM masters").fetchone()[0]
+    bookings = conn.execute("SELECT COUNT(*) FROM bookings").fetchone()[0]
+    confirmed = conn.execute("SELECT COUNT(*) FROM bookings WHERE status='confirmed'").fetchone()[0]
+    pending = conn.execute("SELECT COUNT(*) FROM bookings WHERE status='pending_payment'").fetchone()[0]
+    
+    revenue = conn.execute("""
+        SELECT SUM(s.price) FROM bookings b 
+        JOIN services s ON b.service_id = s.id 
+        WHERE b.status = 'confirmed'
+    """).fetchone()[0] or 0
+    
+    return {
+        "masters": masters,
+        "total_bookings": bookings,
+        "confirmed": confirmed,
+        "pending": pending,
+        "revenue": revenue
+    }
 
 # ========== ГЛАВНАЯ ==========
 @app.get("/")
