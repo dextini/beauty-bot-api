@@ -28,7 +28,7 @@ CLEANING_TIME = 15
 MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 
 # === ПУТЬ К БАЗЕ ===
-DB_PATH = "beauty.db"
+DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
 
 # === CORS ===
 app.add_middleware(
