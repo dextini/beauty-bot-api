@@ -14,10 +14,10 @@ from datetime import datetime, timedelta
 import asyncio
 import logging
 
+DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
 
 app = FastAPI(title="Beauty Bot API")
 
