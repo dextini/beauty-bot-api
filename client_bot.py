@@ -32,7 +32,6 @@ def admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить мастера", callback_data="admin_add_master")],
         [InlineKeyboardButton(text="📋 Список мастеров", callback_data="admin_list_masters")],
-        [InlineKeyboardButton(text="🔗 Назначить Telegram ID", callback_data="admin_set_telegram")],
         [InlineKeyboardButton(text="❌ Удалить мастера", callback_data="admin_delete_master")],
         [InlineKeyboardButton(text="🎫 Создать промокод", callback_data="admin_add_promo")],
         [InlineKeyboardButton(text="🗺️ Открыть карту", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))]
@@ -165,41 +164,37 @@ async def start(message: types.Message):
 async def admin_add_master(callback: types.CallbackQuery):
     await callback.message.answer(
         "➕ *Добавление мастера*\n\n"
-        "Отправьте данные в формате:\n"
-        "`Имя | Адрес | Телефон | Instagram | Описание`\n\n"
-        "Пример:\n"
-        "`Алина Козлова | ул. Ленина, 12 | +79001234567 | @alina_nails | Мастер маникюра`\n\n"
-        "📍 *Важно:* после добавления назначьте Telegram ID мастеру через пункт «Назначить Telegram ID».",
+        "Отправьте ТОЛЬКО Telegram ID мастера:\n"
+        "`123456789`\n\n"
+        "💡 *Как узнать Telegram ID:* напишите @userinfobot\n\n"
+        "После добавления мастер сам заполнит свой профиль в личном кабинете.",
         parse_mode="Markdown"
     )
     await callback.answer()
 
 
-@dp.message(lambda msg: msg.text and " | " in msg.text and msg.from_user.id in ADMIN_IDS)
+@dp.message(lambda msg: msg.text and msg.text.isdigit() and msg.from_user.id in ADMIN_IDS)
 async def handle_add_master(message: types.Message):
-    parts = message.text.split(" | ")
-    if len(parts) < 2:
-        await message.answer("❌ Неверный формат. Используйте: `Имя | Адрес | Телефон | Instagram | Описание`", parse_mode="Markdown")
-        return
-    
-    name = parts[0].strip()
-    address = parts[1].strip()
-    phone = parts[2].strip() if len(parts) > 2 else ""
-    instagram = parts[3].strip() if len(parts) > 3 else ""
-    description = parts[4].strip() if len(parts) > 4 else ""
+    telegram_id = message.text.strip()
     
     async with aiohttp.ClientSession() as session:
-        async with session.post(f"{API_URL}/admin/add-master", json={
-            "name": name,
-            "address": address,
-            "phone": phone,
-            "instagram": instagram,
-            "description": description
-        }) as resp:
+        async with session.post(f"{API_URL}/admin/add-master", json={"telegram_id": telegram_id}) as resp:
             if resp.status == 200:
-                await message.answer(f"✅ Мастер *{name}* добавлен!\n\n🔗 Теперь назначьте ему Telegram ID через пункт «Назначить Telegram ID».", parse_mode="Markdown")
+                data = await resp.json()
+                await message.answer(
+                    f"✅ *Мастер добавлен!*\n\n"
+                    f"📌 Telegram ID: `{telegram_id}`\n"
+                    f"🆔 ID мастера: {data.get('master_id')}\n\n"
+                    f"📝 Теперь мастер должен:\n"
+                    f"1️⃣ Зайти в бота через /start\n"
+                    f"2️⃣ Заполнить свой профиль (имя, адрес, телефон)\n"
+                    f"3️⃣ Добавить услуги и настроить расписание\n\n"
+                    f"✨ Готово!",
+                    parse_mode="Markdown"
+                )
             else:
-                await message.answer("❌ Ошибка при добавлении мастера")
+                error_text = await resp.text()
+                await message.answer(f"❌ Ошибка: {error_text}")
 
 
 @dp.callback_query(F.data == "admin_list_masters")
@@ -213,13 +208,13 @@ async def admin_list_masters(callback: types.CallbackQuery):
                 else:
                     text = "📋 *Список мастеров:*\n\n"
                     for m in masters:
-                        text += f"🆔 *ID:* {m['id']}\n"
-                        text += f"👤 *Имя:* {m['name']}\n"
-                        text += f"🤖 *Telegram ID:* {m.get('telegram_id') or '❌ не назначен'}\n"
+                        status_emoji = "✅" if m.get('status') == "Заполнен" else "⚠️"
+                        text += f"{status_emoji} *ID:* {m['id']}\n"
+                        text += f"👤 *Имя:* {m.get('name') or 'Не заполнено'}\n"
+                        text += f"🤖 *Telegram ID:* {m.get('telegram_id') or 'Нет'}\n"
                         text += f"📞 *Телефон:* {m.get('phone') or '-'}\n"
-                        text += f"📷 *Instagram:* {m.get('instagram') or '-'}\n"
-                        text += f"🔤 *Иконка:* {m.get('icon') or '💅'}\n"
-                        text += "─" * 25 + "\n\n"
+                        text += f"📷 *Статус:* {m.get('status') or 'Новый'}\n"
+                        text += "─" * 20 + "\n\n"
                     
                     if len(masters) > 10:
                         text += f"\n📊 *Всего мастеров:* {len(masters)}"
@@ -230,41 +225,11 @@ async def admin_list_masters(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(F.data == "admin_set_telegram")
-async def admin_set_telegram_prompt(callback: types.CallbackQuery):
-    await callback.message.answer(
-        "🔗 *Назначение Telegram ID мастеру*\n\n"
-        "Отправьте в формате:\n"
-        "`ID_МАСТЕРА TELEGRAM_ID`\n\n"
-        "Пример:\n"
-        "`1 123456789`\n\n"
-        "💡 *Как узнать Telegram ID:* напишите @userinfobot",
-        parse_mode="Markdown"
-    )
-    await callback.answer()
-
-
-@dp.message(lambda msg: msg.text and len(msg.text.split()) == 2 and msg.from_user.id in ADMIN_IDS and msg.text.split()[0].isdigit())
-async def handle_set_telegram(message: types.Message):
-    parts = message.text.split()
-    master_id = parts[0]
-    telegram_id = parts[1]
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.patch(f"{API_URL}/admin/set-telegram/{master_id}?telegram_id={telegram_id}") as resp:
-            if resp.status == 200:
-                await message.answer(f"✅ Telegram ID `{telegram_id}` назначен мастеру ID {master_id}\n\n🎉 Теперь мастер может войти в свой кабинет через /start", parse_mode="Markdown")
-            else:
-                await message.answer("❌ Ошибка при назначении Telegram ID")
-
-
 @dp.callback_query(F.data == "admin_delete_master")
 async def admin_delete_master_prompt(callback: types.CallbackQuery):
     await callback.message.answer(
         "❌ *Удаление мастера*\n\n"
         "Отправьте ID мастера для удаления:\n"
-        "`ID`\n\n"
-        "Пример:\n"
         "`1`\n\n"
         "⚠️ *Внимание:* все записи и услуги мастера будут удалены!",
         parse_mode="Markdown"
@@ -277,14 +242,9 @@ async def handle_delete_master(message: types.Message):
     master_id = message.text
     
     async with aiohttp.ClientSession() as session:
-        async with session.get(f"{API_URL}/admin/masters") as resp:
-            masters = await resp.json()
-            master_name = next((m.get("name") for m in masters if str(m.get("id")) == master_id), f"ID {master_id}")
-    
-    async with aiohttp.ClientSession() as session:
         async with session.delete(f"{API_URL}/admin/delete-master/{master_id}") as resp:
             if resp.status == 200:
-                await message.answer(f"✅ Мастер *{master_name}* удалён", parse_mode="Markdown")
+                await message.answer(f"✅ Мастер *ID {master_id}* удалён", parse_mode="Markdown")
             else:
                 await message.answer("❌ Ошибка при удалении мастера")
 
@@ -314,11 +274,11 @@ async def handle_add_promo(message: types.Message):
     valid_until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
     
     async with aiohttp.ClientSession() as session:
-        async with session.post(f"{API_URL}/admin/add-promo", json={
+        async with session.post(f"{API_URL}/admin/create-promocode", json={
             "code": code,
-            "discount_percent": discount,
-            "valid_until": valid_until,
-            "max_uses": 100
+            "discount": discount,
+            "expires_at": valid_until,
+            "uses_limit": 100
         }) as resp:
             if resp.status == 200:
                 await message.answer(f"✅ Промокод `{code}` создан!\n🎁 Скидка {discount}% до {valid_until}", parse_mode="Markdown")
@@ -372,29 +332,6 @@ async def close_chat(message: types.Message):
         "Чтобы начать новый чат, откройте ссылку из уведомления о записи.",
         parse_mode="Markdown"
     )
-
-
-# ========== ОБРАБОТКА СООБЩЕНИЙ ДЛЯ ЧАТА ==========
-active_chats = {}
-
-@dp.message()
-async def handle_message(message: types.Message):
-    user_id = message.from_user.id
-    
-    if user_id in active_chats and active_chats[user_id]["type"] == "chat":
-        chat = active_chats[user_id]
-        other_id = chat["other_party_id"]
-        
-        try:
-            await bot.send_message(
-                other_id,
-                f"💬 *Сообщение от {'мастера' if user_id == chat.get('master_id', 0) else 'клиента'}*\n\n{message.text}",
-                parse_mode="Markdown"
-            )
-            await message.answer("✅ Сообщение отправлено")
-        except Exception as e:
-            await message.answer(f"❌ Ошибка отправки: {e}")
-        return
 
 
 # ========== ЗАПУСК ==========
