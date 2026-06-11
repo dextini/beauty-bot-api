@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 import asyncio
 import logging
 import os
-import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,13 +21,13 @@ app = FastAPI(title="Beauty Bot API")
 
 # === КОНФИГУРАЦИЯ ===
 YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1368786")
-YKASSA_SECRET_KEY = "live_aRHBYSr1irUAO8_dvzZCmQCih-vTF0q0NFfSvW5OOcs"
+YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "")
 YKASSA_RETURN_URL = os.getenv("YKASSA_RETURN_URL", "https://t.me/pinkspotvelur_bot")
 PAYMENT_COMMISSION = 0.07
 CLEANING_TIME = 15
 MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
-WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")  # API ключ для погоды (OpenWeatherMap)
-SMS_API_KEY = os.getenv("SMS_API_KEY", "")  # API ключ для СМС (например, sms.ru)
+WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")
+SMS_API_KEY = os.getenv("SMS_API_KEY", "")
 
 # === ПУТЬ К БАЗЕ ДАННЫХ ===
 DB_PATH = "beauty.db"
@@ -102,6 +101,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
+    # Таблица мастеров
     c.execute("""CREATE TABLE IF NOT EXISTS masters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT, address TEXT, lat REAL, lon REAL,
@@ -110,11 +110,13 @@ def init_db():
         bot_token TEXT, description TEXT, icon TEXT DEFAULT '💅', rating REAL DEFAULT 0
     )""")
     
+    # Таблица услуг
     c.execute("""CREATE TABLE IF NOT EXISTS services (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER, name TEXT, price INTEGER, duration_min INTEGER
     )""")
     
+    # Таблица записей
     c.execute("""CREATE TABLE IF NOT EXISTS bookings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER, service_id INTEGER,
@@ -132,29 +134,33 @@ def init_db():
         sms_sent INTEGER DEFAULT 0
     )""")
     
+    # Таблица выходных дней
     c.execute("""CREATE TABLE IF NOT EXISTS days_off (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER, date TEXT, UNIQUE(master_id, date)
     )""")
     
+    # Таблица чатов
     c.execute("""CREATE TABLE IF NOT EXISTS chats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         booking_id INTEGER UNIQUE, master_id INTEGER,
         client_telegram_id TEXT, master_telegram_id TEXT, token TEXT UNIQUE
     )""")
     
+    # Таблица сообщений чата
     c.execute("""CREATE TABLE IF NOT EXISTS chat_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         booking_id INTEGER, from_id TEXT, to_id TEXT,
         message TEXT, is_read INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
+    # Таблица пользователей
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         telegram_id TEXT UNIQUE, registered_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # НОВЫЕ ТАБЛИЦЫ
+    # Таблица быстрых ответов
     c.execute("""CREATE TABLE IF NOT EXISTS quick_replies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -163,6 +169,7 @@ def init_db():
         FOREIGN KEY (master_id) REFERENCES masters(id)
     )""")
     
+    # Таблица портфолио
     c.execute("""CREATE TABLE IF NOT EXISTS portfolio (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -172,6 +179,7 @@ def init_db():
         FOREIGN KEY (master_id) REFERENCES masters(id)
     )""")
     
+    # Таблица избранного
     c.execute("""CREATE TABLE IF NOT EXISTS favorites (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         client_telegram_id TEXT,
@@ -180,6 +188,7 @@ def init_db():
         FOREIGN KEY (master_id) REFERENCES masters(id)
     )""")
     
+    # Таблица чёрного списка
     c.execute("""CREATE TABLE IF NOT EXISTS blacklist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -189,13 +198,25 @@ def init_db():
         FOREIGN KEY (master_id) REFERENCES masters(id)
     )""")
     
-    # Добавляем недостающие колонки
-    for col in ["reminder_24h_sent INTEGER DEFAULT 0", "reminder_1h_sent INTEGER DEFAULT 0", "sms_sent INTEGER DEFAULT 0"]:
-        try:
-            c.execute(f"ALTER TABLE bookings ADD COLUMN {col}")
-        except: pass
+    # ПРИНУДИТЕЛЬНОЕ ДОБАВЛЕНИЕ ВСЕХ НУЖНЫХ КОЛОНОК (для существующей БД)
+    required_columns = {
+        'deposit_amount': 'REAL DEFAULT 0',
+        'total_amount': 'REAL DEFAULT 0',
+        'payment_id': 'TEXT',
+        'cancelled_at': 'TEXT',
+        'reminder_24h_sent': 'INTEGER DEFAULT 0',
+        'reminder_1h_sent': 'INTEGER DEFAULT 0',
+        'sms_sent': 'INTEGER DEFAULT 0'
+    }
     
-    # Тестовые данные
+    for col_name, col_type in required_columns.items():
+        try:
+            c.execute(f"ALTER TABLE bookings ADD COLUMN {col_name} {col_type}")
+            logger.info(f"✅ Добавлена колонка {col_name}")
+        except Exception as e:
+            logger.info(f"Колонка {col_name} уже есть: {e}")
+    
+    # Тестовые данные (только Алина Козлова в Ростове-на-Дону)
     c.execute("SELECT COUNT(*) FROM masters")
     if c.fetchone()[0] == 0:
         c.execute("INSERT INTO masters (name, address, lat, lon, phone, instagram, icon, work_start, work_end, telegram_id, bot_token) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -206,11 +227,11 @@ def init_db():
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Маникюр с покрытием гель-лак", 2000, 90))
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Педикюр", 2500, 120))
         
-        # Добавляем шаблоны ответов для мастера
+        # Быстрые ответы
         quick_replies = [
-            ("Стоимость", "💅 Стоимость услуги: {price} ₽"),
+            ("Цена", "💅 Стоимость услуги: {price} ₽"),
             ("Адрес", "📍 Я нахожусь по адресу: {address}"),
-            ("Как добраться", "🚇 Ближайшая станция метро ..."),
+            ("Как добраться", "🚇 Ближайшая станция метро - Пушкинская"),
             ("Продолжительность", "⏱️ Услуга займёт примерно {duration} минут"),
         ]
         for title, msg in quick_replies:
@@ -283,101 +304,6 @@ async def send_telegram_message(chat_id: str, message: str, parse_mode: str = "M
     except Exception as e:
         logger.error(f"❌ Ошибка отправки в Telegram: {e}")
 
-async def send_sms(phone: str, message: str):
-    """Отправка СМС через API (sms.ru, smsc.ru и т.д.)"""
-    if not SMS_API_KEY or not phone:
-        return
-    try:
-        # Пример для sms.ru
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                "https://sms.ru/sms/send",
-                data={"api_id": SMS_API_KEY, "to": phone, "msg": message, "json": 1}
-            )
-            logger.info(f"✅ СМС отправлено на {phone}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки СМС: {e}")
-
-async def get_weather_forecast(address: str) -> str:
-    """Получение прогноза погоды по адресу"""
-    if not WEATHER_API_KEY:
-        return "☀️ Проверьте погоду перед выходом!"
-    try:
-        # Упрощённо: координаты мастера уже есть в БД
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"https://api.openweathermap.org/data/2.5/weather",
-                params={"q": "Rostov-on-Don", "appid": WEATHER_API_KEY, "units": "metric", "lang": "ru"}
-            )
-            if response.status_code == 200:
-                data = response.json()
-                temp = data["main"]["temp"]
-                desc = data["weather"][0]["description"]
-                return f"🌡️ Температура: {temp}°C, {desc}"
-    except:
-        pass
-    return "☀️ Хорошей погоды!"
-
-async def send_reminders():
-    """Отправка напоминаний о записях (запускается каждые 10 минут)"""
-    conn = get_db()
-    try:
-        now = datetime.now()
-        today = now.strftime("%Y-%m-%d")
-        now_time = now.strftime("%H:%M")
-        
-        # Напоминания за 24 часа
-        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-        bookings_24h = conn.execute("""
-            SELECT b.*, m.name as master_name, m.address, m.phone, m.telegram_id as master_tg,
-                   s.name as service_name, s.price
-            FROM bookings b
-            JOIN masters m ON b.master_id = m.id
-            JOIN services s ON b.service_id = s.id
-            WHERE b.status = 'confirmed' AND b.date = ? AND b.reminder_24h_sent = 0
-        """, (tomorrow,)).fetchall()
-        
-        for b in bookings_24h:
-            client_msg = f"🌸 *Напоминание о записи!* 🌸\n\n📅 Завтра в {b['time']} у вас запись к {b['master_name']}\n💅 Услуга: {b['service_name']}\n📍 Адрес: {b['address']}\n\nЖдём вас! 🎀"
-            master_msg = f"🌸 *Напоминание о записи!* 🌸\n\n📅 Завтра в {b['time']} запись от {b['client_name']}\n💅 Услуга: {b['service_name']}\n\nПодготовьтесь к приёму! 💅"
-            
-            await send_telegram_message(b["client_telegram_id"], client_msg)
-            await send_telegram_message(b["master_tg"], master_msg)
-            conn.execute("UPDATE bookings SET reminder_24h_sent = 1 WHERE id = ?", (b["id"],))
-            
-            # СМС дубль (если есть номер)
-            if b.get("client_phone") and not b.get("sms_sent"):
-                sms_text = f"BeautyMap: напоминание! Завтра в {b['time']} запись к {b['master_name']}. Ждём вас!"
-                await send_sms(b["client_phone"], sms_text)
-                conn.execute("UPDATE bookings SET sms_sent = 1 WHERE id = ?", (b["id"],))
-        
-        # Напоминания за 1 час
-        hour_later = (now + timedelta(hours=1)).strftime("%H:%M")
-        bookings_1h = conn.execute("""
-            SELECT b.*, m.name as master_name, m.address, m.lat, m.lon,
-                   s.name as service_name
-            FROM bookings b
-            JOIN masters m ON b.master_id = m.id
-            JOIN services s ON b.service_id = s.id
-            WHERE b.status = 'confirmed' AND b.date = ? AND b.time = ? AND b.reminder_1h_sent = 0
-        """, (today, hour_later)).fetchall()
-        
-        for b in bookings_1h:
-            weather = await get_weather_forecast(b['address'])
-            client_msg = f"🌸 *Скоро запись!* 🌸\n\n⏰ Через час у вас запись к {b['master_name']}\n💅 Услуга: {b['service_name']}\n{weather}\n\nНе опаздывайте! 🚗"
-            
-            await send_telegram_message(b["client_telegram_id"], client_msg)
-            conn.execute("UPDATE bookings SET reminder_1h_sent = 1 WHERE id = ?", (b["id"],))
-        
-        conn.commit()
-    finally:
-        conn.close()
-
-async def run_reminders_loop():
-    while True:
-        await send_reminders()
-        await asyncio.sleep(600)  # 10 минут
-
 def confirm_booking(booking_id: int, conn: sqlite3.Connection):
     conn.execute("UPDATE bookings SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
     conn.commit()
@@ -448,11 +374,6 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
             "confirmation_url": "https://yandex.ru",
             "payment_id": f"fallback_{booking_id}"
         }
-
-# ========== ЗАПУСК ПЕРИОДИЧЕСКИХ ЗАДАЧ ==========
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(run_reminders_loop())
 
 # ========== ЭНДПОИНТЫ ==========
 
@@ -529,6 +450,21 @@ def get_slots(master_id: int, date: str, service_id: int, conn=Depends(get_db)):
 async def create_booking(data: BookingIn):
     conn = get_db()
     try:
+        # ПРЯМОЕ ДОБАВЛЕНИЕ КОЛОНОК (на случай если их нет)
+        try:
+            conn.execute("ALTER TABLE bookings ADD COLUMN deposit_amount REAL DEFAULT 0")
+            logger.info("✅ deposit_amount добавлена")
+        except: pass
+        try:
+            conn.execute("ALTER TABLE bookings ADD COLUMN total_amount REAL DEFAULT 0")
+            logger.info("✅ total_amount добавлена")
+        except: pass
+        try:
+            conn.execute("ALTER TABLE bookings ADD COLUMN payment_id TEXT")
+            logger.info("✅ payment_id добавлена")
+        except: pass
+        conn.commit()
+        
         master = conn.execute("SELECT * FROM masters WHERE id=?", (data.master_id,)).fetchone()
         if not master:
             raise HTTPException(404, "Master not found")
@@ -536,12 +472,6 @@ async def create_booking(data: BookingIn):
         service = conn.execute("SELECT * FROM services WHERE id=? AND master_id=?", (data.service_id, data.master_id)).fetchone()
         if not service:
             raise HTTPException(404, "Service not found")
-        
-        # Проверка чёрного списка
-        blacklisted = conn.execute("SELECT id FROM blacklist WHERE master_id=? AND client_telegram_id=?", 
-                                   (data.master_id, data.client_telegram_id)).fetchone()
-        if blacklisted:
-            raise HTTPException(403, "You are blocked by the master")
         
         existing = conn.execute("SELECT id FROM bookings WHERE master_id=? AND date=? AND time=? AND status IN ('pending_payment', 'confirmed')", 
                                (data.master_id, data.date, data.time)).fetchone()
@@ -703,26 +633,6 @@ def get_favorites(client_telegram_id: str, conn: sqlite3.Connection = Depends(ge
         WHERE f.client_telegram_id = ?
     """, (client_telegram_id,)).fetchall()
     return [dict(f) for f in favorites]
-
-# ========== ЧЁРНЫЙ СПИСОК ==========
-@app.post("/master/{telegram_id}/blacklist")
-def add_to_blacklist(telegram_id: str, client_telegram_id: str, reason: str = "", conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
-    if not master:
-        raise HTTPException(404, "Master not found")
-    conn.execute("INSERT INTO blacklist (master_id, client_telegram_id, reason) VALUES (?,?,?)",
-                (master["id"], client_telegram_id, reason))
-    conn.commit()
-    return {"status": "ok"}
-
-@app.delete("/master/{telegram_id}/blacklist/{client_telegram_id}")
-def remove_from_blacklist(telegram_id: str, client_telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
-    if not master:
-        raise HTTPException(404, "Master not found")
-    conn.execute("DELETE FROM blacklist WHERE master_id=? AND client_telegram_id=?", (master["id"], client_telegram_id))
-    conn.commit()
-    return {"status": "ok"}
 
 # ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ==========
 
