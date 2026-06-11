@@ -30,7 +30,7 @@ MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURS
 # === ПУТЬ К БАЗЕ ДАННЫХ ===
 DB_PATH = "beauty.db"
 
-# === CORS ===
+# === CORS (разрешаем всё для запросов с фронтенда) ===
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -431,7 +431,7 @@ async def ykassa_webhook(notification: dict):
                 conn.close()
     return {"status": "ok"}
 
-# ========== ЭНДПОИНТ ДЛЯ ОТМЕНЫ ЗАПИСИ ==========
+# ========== ЭНДПОИНТ ДЛЯ ОТМЕНЫ ЗАПИСИ (PATCH) ==========
 @app.patch("/bookings/{booking_id}/status")
 def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
