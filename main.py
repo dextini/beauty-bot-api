@@ -49,7 +49,6 @@ async def add_cors_headers(request: Request, call_next):
 async def options_handler(path: str):
     return JSONResponse(content={"message": "OK"}, headers={"Access-Control-Allow-Origin": "*"})
 
-DB_PATH = "beauty.db"
 DEFAULT_WORK_START = "09:00"
 DEFAULT_WORK_END = "20:00"
 
