@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 import asyncio
 import logging
 import os
-DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,11 +21,14 @@ app = FastAPI(title="Beauty Bot API")
 
 # === КОНФИГУРАЦИЯ ===
 YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1368786")
-YKASSA_SECRET_KEY = "live_aRHBYSr1irUAO8_dvzZCmQCih-vTF0q0NFfSvW5OOcs"
+YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "")
 YKASSA_RETURN_URL = os.getenv("YKASSA_RETURN_URL", "https://t.me/pinkspotvelur_bot")
 PAYMENT_COMMISSION = 0.07
 CLEANING_TIME = 15
 MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
+
+# === ПУТЬ К БАЗЕ ДАННЫХ ===
+DB_PATH = "beauty.db"
 
 # === CORS ===
 app.add_middleware(
@@ -429,7 +431,7 @@ async def ykassa_webhook(notification: dict):
                 conn.close()
     return {"status": "ok"}
 
-# ========== ГЛАВНОЕ — ЭНДПОИНТ ДЛЯ ОТМЕНЫ ЗАПИСИ ==========
+# ========== ЭНДПОИНТ ДЛЯ ОТМЕНЫ ЗАПИСИ ==========
 @app.patch("/bookings/{booking_id}/status")
 def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
