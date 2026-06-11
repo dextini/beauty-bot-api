@@ -30,10 +30,16 @@ MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURS
 # === ПУТЬ К БАЗЕ ===
 DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
 
-# === CORS ===
+# === CORS (ПРАВИЛЬНЫЙ) ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://project-ev8r3.vercel.app",
+        "https://*.vercel.app",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "*"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,7 +49,7 @@ app.add_middleware(
 async def add_cors_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
@@ -99,6 +105,9 @@ class CreateDepositPayment(BaseModel):
 
 # ========== БД ==========
 def init_db():
+    # Создаём папку для БД если нет
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
@@ -124,8 +133,7 @@ def init_db():
         master_id INTEGER,
         name TEXT,
         price INTEGER,
-        duration_min INTEGER,
-        FOREIGN KEY (master_id) REFERENCES masters(id)
+        duration_min INTEGER
     )""")
     
     c.execute("""CREATE TABLE IF NOT EXISTS bookings (
@@ -146,17 +154,14 @@ def init_db():
         cancelled_at TEXT,
         reminder_24h_sent INTEGER DEFAULT 0,
         reminder_1h_sent INTEGER DEFAULT 0,
-        sms_sent INTEGER DEFAULT 0,
-        FOREIGN KEY (master_id) REFERENCES masters(id),
-        FOREIGN KEY (service_id) REFERENCES services(id)
+        sms_sent INTEGER DEFAULT 0
     )""")
     
     c.execute("""CREATE TABLE IF NOT EXISTS days_off (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
         date TEXT,
-        UNIQUE(master_id, date),
-        FOREIGN KEY (master_id) REFERENCES masters(id)
+        UNIQUE(master_id, date)
     )""")
     
     c.execute("""CREATE TABLE IF NOT EXISTS chats (
@@ -165,9 +170,7 @@ def init_db():
         master_id INTEGER,
         client_telegram_id TEXT,
         master_telegram_id TEXT,
-        token TEXT UNIQUE,
-        FOREIGN KEY (booking_id) REFERENCES bookings(id),
-        FOREIGN KEY (master_id) REFERENCES masters(id)
+        token TEXT UNIQUE
     )""")
     
     c.execute("""CREATE TABLE IF NOT EXISTS chat_messages (
@@ -177,8 +180,7 @@ def init_db():
         to_id TEXT,
         message TEXT,
         is_read INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (booking_id) REFERENCES bookings(id)
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
     c.execute("""CREATE TABLE IF NOT EXISTS users (
@@ -191,8 +193,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
         title TEXT,
-        message TEXT,
-        FOREIGN KEY (master_id) REFERENCES masters(id)
+        message TEXT
     )""")
     
     c.execute("""CREATE TABLE IF NOT EXISTS portfolio (
@@ -200,16 +201,14 @@ def init_db():
         master_id INTEGER,
         photo_url TEXT,
         description TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (master_id) REFERENCES masters(id)
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
     c.execute("""CREATE TABLE IF NOT EXISTS favorites (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         client_telegram_id TEXT,
         master_id INTEGER,
-        UNIQUE(client_telegram_id, master_id),
-        FOREIGN KEY (master_id) REFERENCES masters(id)
+        UNIQUE(client_telegram_id, master_id)
     )""")
     
     c.execute("""CREATE TABLE IF NOT EXISTS blacklist (
@@ -217,8 +216,7 @@ def init_db():
         master_id INTEGER,
         client_telegram_id TEXT,
         reason TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (master_id) REFERENCES masters(id)
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
     c.execute("""CREATE TABLE IF NOT EXISTS promocodes (
@@ -498,7 +496,6 @@ async def create_booking(data: BookingIn):
 
 @app.post("/payment-callback")
 async def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Callback от Telegram/Yookassa после успешной оплаты"""
     booking_id = data.get("booking_id")
     payment_id = data.get("payment_id")
     
@@ -616,7 +613,6 @@ def delete_service(telegram_id: str, service_id: int, conn: sqlite3.Connection =
 
 @app.delete("/master/{master_id}/services")
 def delete_service_by_name(master_id: int, name: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Удаление услуги по имени (для бота)"""
     conn.execute("DELETE FROM services WHERE master_id = ? AND name = ?", (master_id, name))
     conn.commit()
     return {"status": "ok"}
@@ -658,23 +654,34 @@ def delete_quick_reply(telegram_id: str, reply_id: int, conn: sqlite3.Connection
     return {"status": "ok"}
 
 # ========== ПОРТФОЛИО ==========
+@app.get("/masters/{master_id}/portfolio")
+def get_master_portfolio(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    portfolio = conn.execute("SELECT * FROM portfolio WHERE master_id = ? ORDER BY created_at DESC", (master_id,)).fetchall()
+    return [dict(p) for p in portfolio]
+
 @app.post("/master/{telegram_id}/portfolio")
 async def add_portfolio_photo(telegram_id: str, photo_url: str = Form(...), description: str = Form(""), conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
-    conn.execute("INSERT INTO portfolio (master_id, photo_url, description) VALUES (?,?,?)",
-                (master["id"], photo_url, description))
+    
+    conn.execute("""
+        INSERT INTO portfolio (master_id, photo_url, description, created_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    """, (master["id"], photo_url, description))
     conn.commit()
-    return {"status": "ok"}
+    
+    return {"status": "ok", "message": "Фото добавлено"}
 
 @app.delete("/master/{telegram_id}/portfolio/{photo_id}")
 def delete_portfolio_photo(telegram_id: str, photo_id: int, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
-    conn.execute("DELETE FROM portfolio WHERE id=? AND master_id=?", (photo_id, master["id"]))
+    
+    conn.execute("DELETE FROM portfolio WHERE id = ? AND master_id = ?", (photo_id, master["id"]))
     conn.commit()
+    
     return {"status": "ok"}
 
 # ========== ИЗБРАННОЕ ==========
@@ -782,7 +789,6 @@ def register_user(data: UserRegister, conn: sqlite3.Connection = Depends(get_db)
 # ========== АДМИН-ПАНЕЛЬ ==========
 @app.post("/admin/add-master")
 def admin_add_master_full(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Добавление мастера с полными данными (для бота)"""
     name = data.get("name")
     address = data.get("address")
     phone = data.get("phone", "")
@@ -804,7 +810,6 @@ def admin_add_master_full(data: dict, conn: sqlite3.Connection = Depends(get_db)
 
 @app.patch("/masters/{master_id}/telegram")
 def set_master_telegram(master_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Назначение Telegram ID мастеру"""
     telegram_id = data.get("telegram_id")
     if not telegram_id:
         raise HTTPException(400, "telegram_id обязателен")
