@@ -4,7 +4,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import sqlite3
-import os
 import httpx
 import json
 import secrets
@@ -13,7 +12,7 @@ import base64
 from datetime import datetime, timedelta
 import asyncio
 import logging
-
+import os
 DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
 
 logging.basicConfig(level=logging.INFO)
