@@ -3,3 +3,5 @@ uvicorn
 aiogram
 httpx
 python-multipart
+asyncpg
+psycopg2-binary
