@@ -23,7 +23,6 @@ ADMIN_IDS = [868528632]
 
 
 async def api_request(method: str, endpoint: str, data: dict = None):
-    """Универсальная функция для запросов к API"""
     url = f"{API_URL}{endpoint}"
     async with aiohttp.ClientSession() as session:
         try:
@@ -211,10 +210,8 @@ async def share_master_qr(callback: types.CallbackQuery):
         return
     
     master_id = master_data["id"]
-    # ✅ ПРАВИЛЬНАЯ ССЫЛКА — через бота!
     bot_link = f"https://t.me/pinkspotvelur_bot?start=master_{master_id}"
     
-    # Генерируем QR-код
     qr = qrcode.QRCode(box_size=8, border=2)
     qr.add_data(bot_link)
     qr.make(fit=True)
@@ -230,7 +227,7 @@ async def share_master_qr(callback: types.CallbackQuery):
                 f"🔗 Ссылка: `{bot_link}`\n\n"
                 f"📸 *Как использовать:*\n"
                 f"• Напечатайте на визитках\n"
-                f"• Разместите в салоне на видном месте\n"
+                f"• Разместите в салоне\n"
                 f"• Добавьте в Instagram Stories\n\n"
                 f"✨ Клиент сканирует → открывает бота → нажимает «Открыть профиль мастера» → записывается!",
         parse_mode="Markdown"
@@ -245,8 +242,7 @@ async def admin_add_master(callback: types.CallbackQuery):
         "➕ *Добавление мастера*\n\n"
         "Отправьте ТОЛЬКО Telegram ID мастера:\n"
         "`123456789`\n\n"
-        "💡 *Как узнать Telegram ID:* напишите @userinfobot\n\n"
-        "После добавления мастер сам заполнит свой профиль в личном кабинете.",
+        "💡 *Как узнать Telegram ID:* напишите @userinfobot",
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -265,8 +261,8 @@ async def handle_add_master(message: types.Message):
             f"🆔 ID мастера: {result.get('master_id')}\n\n"
             f"📝 Теперь мастер должен:\n"
             f"1️⃣ Зайти в бота через /start\n"
-            f"2️⃣ Заполнить свой профиль (имя, адрес, телефон)\n"
-            f"3️⃣ Добавить услуги и настроить расписание\n\n"
+            f"2️⃣ Заполнить свой профиль\n"
+            f"3️⃣ Добавить услуги\n\n"
             f"✨ Готово!",
             parse_mode="Markdown"
         )
@@ -329,8 +325,7 @@ async def admin_add_promo_prompt(callback: types.CallbackQuery):
         "Отправьте в формате:\n"
         "`КОД СКИДКА% ДНЕЙ`\n\n"
         "Пример:\n"
-        "`SUMMER20 20 30`\n\n"
-        "Скидка в процентах, действует указанное количество дней.",
+        "`SUMMER20 20 30`",
         parse_mode="Markdown"
     )
     await callback.answer()
