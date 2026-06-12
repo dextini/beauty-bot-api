@@ -23,6 +23,7 @@ ADMIN_IDS = [868528632]
 
 
 async def api_request(method: str, endpoint: str, data: dict = None):
+    """Универсальная функция для запросов к API"""
     url = f"{API_URL}{endpoint}"
     async with aiohttp.ClientSession() as session:
         try:
@@ -102,28 +103,24 @@ async def start(message: types.Message):
     logger.info(f"Пользователь {user_id} вызвал /start с параметром: {text}")
     
     # Регистрация пользователя
-    await api_request("POST", "/user/register", {"telegram_id": str(user_id)})
+    await apiRequest("POST", "/user/register", {"telegram_id": str(user_id)})
     
-    # ========== ОБРАБОТКА ССЫЛКИ НА МАСТЕРА ==========
+    # ========== QR-КОД / ССЫЛКА НА МАСТЕРА ==========
     if text.startswith("/start master_"):
         master_id = text.replace("/start master_", "").strip()
         webapp_url = f"https://project-ev8r3.vercel.app/?id={master_id}"
         
-        markup = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌸 Открыть профиль мастера", web_app=WebAppInfo(url=webapp_url))],
-            [InlineKeyboardButton(text="🗺️ Открыть карту", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))]
-        ])
-        
         await message.answer(
-            f"✨ *Добро пожаловать!*\n\n"
-            f"Вы перешли по ссылке мастера.\n"
+            f"🌸 *Профиль мастера*\n\n"
             f"Нажмите на кнопку, чтобы открыть профиль и записаться:",
-            reply_markup=markup,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📅 Открыть профиль мастера", web_app=WebAppInfo(url=webapp_url))]
+            ]),
             parse_mode="Markdown"
         )
         return
     
-    # Обработка ссылки на чат
+    # ========== ССЫЛКА НА ЧАТ ==========
     if text.startswith("/start chat_"):
         token = text.replace("/start chat_", "")
         async with aiohttp.ClientSession() as session:
@@ -139,7 +136,7 @@ async def start(message: types.Message):
                     await message.answer("❌ Чат не найден или устарел")
         return
     
-    # Обработка оплаты
+    # ========== ССЫЛКА НА ОПЛАТУ ==========
     if text.startswith("/start pay_"):
         payment_id = text.replace("/start pay_", "")
         async with aiohttp.ClientSession() as session:
@@ -154,7 +151,7 @@ async def start(message: types.Message):
                     await message.answer("❌ Ошибка подтверждения оплаты")
         return
     
-    # Проверка подписки
+    # ========== ПРОВЕРКА ПОДПИСКИ ==========
     is_subscribed = await check_subscription(user_id)
     if not is_subscribed:
         await message.answer(
@@ -167,7 +164,7 @@ async def start(message: types.Message):
         )
         return
     
-    # Админ-панель
+    # ========== АДМИН-ПАНЕЛЬ ==========
     if is_admin(user_id):
         await message.answer(
             "👑 *Beauty Bot Admin Panel*\n\n"
@@ -177,8 +174,8 @@ async def start(message: types.Message):
         )
         return
     
-    # Проверка на мастера
-    master_data = await api_request("GET", f"/masters/by_telegram/{user_id}")
+    # ========== ПРОВЕРКА НА МАСТЕРА ==========
+    master_data = await apiRequest("GET", f"/masters/by_telegram/{user_id}")
     
     if master_data and master_data.get("id"):
         master_name = master_data.get("name", "Мастер")
@@ -193,7 +190,7 @@ async def start(message: types.Message):
         )
         return
     
-    # Обычный клиент
+    # ========== ОБЫЧНЫЙ КЛИЕНТ ==========
     await message.answer(
         "💅 *Добро пожаловать в Beauty Map!*\n\n"
         "Нажми кнопку ниже, чтобы найти мастера рядом с тобой.\n\n"
@@ -207,7 +204,7 @@ async def start(message: types.Message):
 @dp.callback_query(F.data == "share_master_qr")
 async def share_master_qr(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    master_data = await api_request("GET", f"/masters/by_telegram/{user_id}")
+    master_data = await apiRequest("GET", f"/masters/by_telegram/{user_id}")
     
     if not master_data:
         await callback.answer("❌ Вы не зарегистрированы как мастер", show_alert=True)
@@ -259,7 +256,7 @@ async def admin_add_master(callback: types.CallbackQuery):
 async def handle_add_master(message: types.Message):
     telegram_id = message.text.strip()
     
-    result = await api_request("POST", "/admin/add-master", {"telegram_id": telegram_id})
+    result = await apiRequest("POST", "/admin/add-master", {"telegram_id": telegram_id})
     
     if result:
         await message.answer(
@@ -279,7 +276,7 @@ async def handle_add_master(message: types.Message):
 
 @dp.callback_query(F.data == "admin_list_masters")
 async def admin_list_masters(callback: types.CallbackQuery):
-    masters = await api_request("GET", "/admin/masters")
+    masters = await apiRequest("GET", "/admin/masters")
     
     if not masters:
         await callback.message.answer("📭 Нет мастеров в базе")
@@ -317,7 +314,7 @@ async def admin_delete_master_prompt(callback: types.CallbackQuery):
 async def handle_delete_master(message: types.Message):
     master_id = message.text
     
-    success = await api_request("DELETE", f"/admin/delete-master/{master_id}")
+    success = await apiRequest("DELETE", f"/admin/delete-master/{master_id}")
     
     if success:
         await message.answer(f"✅ Мастер *ID {master_id}* удалён", parse_mode="Markdown")
@@ -348,7 +345,7 @@ async def handle_add_promo(message: types.Message):
     
     valid_until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
     
-    result = await api_request("POST", "/admin/add-promo", {
+    result = await apiRequest("POST", "/admin/add-promo", {
         "code": code,
         "discount": discount,
         "valid_until": valid_until,
