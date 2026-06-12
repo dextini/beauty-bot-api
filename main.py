@@ -23,11 +23,10 @@ app = FastAPI(title="Beauty Bot API")
 YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1368786")
 YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "live_aRHBYSr1irUAO8_dvzZCmQCih-vTF0q0NFfSvW5OOcs")
 YKASSA_RETURN_URL = os.getenv("YKASSA_RETURN_URL", "https://t.me/pinkspotvelur_bot")
-PAYMENT_COMMISSION = 0.07  # 7% депозит
-CASHBACK_PERCENT = 0.07    # 7% кэшбэк
+PAYMENT_COMMISSION = 0.07
+CASHBACK_PERCENT = 0.07
 CLEANING_TIME = 15
 MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
-BOT_API_URL = os.getenv("BOT_API_URL", "http://localhost:8001")
 
 DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
 
@@ -96,9 +95,6 @@ class PromoApply(BaseModel):
     user_id: str
     promo_code: str
 
-class CreateDepositPayment(BaseModel):
-    booking_id: int
-
 class ReviewIn(BaseModel):
     booking_id: int
     rating: int
@@ -119,7 +115,6 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Мастера
     c.execute("""CREATE TABLE IF NOT EXISTS masters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT DEFAULT '',
@@ -137,7 +132,6 @@ def init_db():
         rating REAL DEFAULT 0
     )""")
     
-    # Услуги
     c.execute("""CREATE TABLE IF NOT EXISTS services (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -146,7 +140,6 @@ def init_db():
         duration_min INTEGER
     )""")
     
-    # Бронирования
     c.execute("""CREATE TABLE IF NOT EXISTS bookings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -168,7 +161,6 @@ def init_db():
         review_sent INTEGER DEFAULT 0
     )""")
     
-    # Выходные дни
     c.execute("""CREATE TABLE IF NOT EXISTS days_off (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -176,7 +168,6 @@ def init_db():
         UNIQUE(master_id, date)
     )""")
     
-    # Чаты
     c.execute("""CREATE TABLE IF NOT EXISTS chats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         booking_id INTEGER UNIQUE,
@@ -186,7 +177,6 @@ def init_db():
         token TEXT UNIQUE
     )""")
     
-    # Сообщения
     c.execute("""CREATE TABLE IF NOT EXISTS chat_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         booking_id INTEGER,
@@ -197,7 +187,6 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Пользователи (клиенты) с расширенными полями
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         telegram_id TEXT UNIQUE,
@@ -215,7 +204,6 @@ def init_db():
         registered_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Быстрые ответы
     c.execute("""CREATE TABLE IF NOT EXISTS quick_replies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -223,7 +211,6 @@ def init_db():
         message TEXT
     )""")
     
-    # Портфолио
     c.execute("""CREATE TABLE IF NOT EXISTS portfolio (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -232,7 +219,6 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Избранное
     c.execute("""CREATE TABLE IF NOT EXISTS favorites (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         client_telegram_id TEXT,
@@ -240,7 +226,6 @@ def init_db():
         UNIQUE(client_telegram_id, master_id)
     )""")
     
-    # Чёрный список
     c.execute("""CREATE TABLE IF NOT EXISTS blacklist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -249,7 +234,6 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Промокоды
     c.execute("""CREATE TABLE IF NOT EXISTS promocodes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT UNIQUE,
@@ -260,7 +244,6 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Отзывы
     c.execute("""CREATE TABLE IF NOT EXISTS reviews (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         booking_id INTEGER UNIQUE,
@@ -271,7 +254,6 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Реферальные коды
     c.execute("""CREATE TABLE IF NOT EXISTS referrals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         referrer_telegram_id TEXT,
@@ -280,7 +262,7 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Добавляем недостающие колонки
+    # Добавляем колонки если нет
     for col in ['deposit_amount', 'total_amount', 'payment_id', 'cancelled_at', 'reminder_sent', 'review_sent', 'cashback_used']:
         try:
             if col in ['payment_id', 'cancelled_at']:
@@ -365,7 +347,6 @@ def generate_slots_with_duration(work_start: str, work_end: str, booked_slots: L
     
     return free_slots
 
-
 async def send_telegram_message(chat_id: str, message: str, parse_mode: str = "Markdown"):
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -424,13 +405,10 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
                 (booking_id, master["id"], booking["client_telegram_id"], master["telegram_id"], token))
     conn.commit()
     
-    # Начисляем кэшбэк
     apply_cashback(booking["client_telegram_id"], service["price"], conn)
     
-    # Обновляем статистику клиента
     conn.execute("UPDATE users SET total_visits = total_visits + 1, total_spent = total_spent + ? WHERE telegram_id = ?", (service["price"], booking["client_telegram_id"]))
     
-    # Обновляем уровень клиента
     user = conn.execute("SELECT total_visits FROM users WHERE telegram_id = ?", (booking["client_telegram_id"],)).fetchone()
     level_info = get_level_info(user["total_visits"] if user else 0)
     conn.execute("UPDATE users SET level = ?, level_discount = ? WHERE telegram_id = ?", (level_info["level"], level_info["discount"], booking["client_telegram_id"]))
@@ -586,7 +564,6 @@ async def create_booking(data: BookingIn):
         if existing:
             raise HTTPException(409, "Slot already booked")
         
-        # Проверяем кэшбэк пользователя
         user = conn.execute("SELECT cashback_balance, level_discount FROM users WHERE telegram_id = ?", (data.client_telegram_id,)).fetchone()
         user_discount = user["level_discount"] if user else 0
         cashback_to_use = min(user["cashback_balance"] if user else 0, service["price"] * 0.3) if user else 0
@@ -610,7 +587,6 @@ async def create_booking(data: BookingIn):
         
         logger.info(f"📝 Бронь {booking_id}: {data.client_name} -> {service['name']}")
         
-        # Уведомление мастеру
         booking_data = {
             "id": booking_id,
             "master_id": data.master_id,
@@ -624,7 +600,6 @@ async def create_booking(data: BookingIn):
         }
         asyncio.create_task(send_telegram_to_master(booking_data))
         
-        # Уведомление клиенту
         client_msg = f"🌸 *ЗАЯВКА ОТПРАВЛЕНА!* 🌸\n\n💅 {service['name']}\n💰 {final_price_with_cashback} ₽\n💸 Депозит: {deposit_amount} ₽\n🎁 Скидка по уровню: {user_discount}%\n🎁 Списано кэшбэка: {cashback_to_use} ₽\n📅 {data.date} в {data.time}\n\n⏳ Ожидайте подтверждения мастера"
         asyncio.create_task(send_telegram_message(data.client_telegram_id, client_msg))
         
@@ -668,7 +643,6 @@ def update_booking_status(booking_id: int, status: str, conn=Depends(get_db)):
         conn.execute("UPDATE bookings SET status='cancelled', cancelled_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
         conn.commit()
         
-        # Возвращаем кэшбэк если был использован
         if booking["cashback_used"] > 0:
             conn.execute("UPDATE users SET cashback_balance = cashback_balance + ? WHERE telegram_id = ?", (booking["cashback_used"], booking["client_telegram_id"]))
             conn.commit()
@@ -693,7 +667,6 @@ def get_client_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_
         conn.commit()
         user = conn.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
     
-    # Получаем все подтверждённые записи
     bookings = conn.execute("""
         SELECT b.*, s.price, m.name as master_name, s.name as service_name,
                CASE WHEN r.id IS NOT NULL THEN 1 ELSE 0 END as review_given
@@ -705,12 +678,10 @@ def get_client_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_
         ORDER BY b.date DESC
     """, (telegram_id,)).fetchall()
     
-    # Подсчёт статистики
     total_visits = len(bookings)
     total_spent = sum(b["price"] for b in bookings) if bookings else 0
     reviews_count = conn.execute("SELECT COUNT(*) FROM reviews WHERE client_telegram_id = ?", (telegram_id,)).fetchone()[0]
     
-    # Получаем следующую запись
     next_booking = conn.execute("""
         SELECT b.*, m.name as master_name, s.name as service_name, s.price
         FROM bookings b
@@ -720,14 +691,6 @@ def get_client_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_
         ORDER BY b.date, b.time LIMIT 1
     """, (telegram_id,)).fetchone()
     
-    # Получаем активные промокоды
-    promos = conn.execute("""
-        SELECT * FROM promocodes 
-        WHERE expires_at >= date('now') AND used_count < uses_limit
-        ORDER BY discount DESC LIMIT 3
-    """).fetchall()
-    
-    # Уровень клиента
     level_info = get_level_info(total_visits)
     visits_to_next = level_info["next"] - total_visits if level_info["next"] > 0 else 0
     next_level_name = ""
@@ -736,7 +699,6 @@ def get_client_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_
         current_idx = levels.index(level_info["level"])
         next_level_name = levels[current_idx + 1] if current_idx + 1 < len(levels) else "MAX"
     
-    # Обновляем данные пользователя
     conn.execute("UPDATE users SET total_visits=?, total_spent=?, level=?, level_discount=? WHERE telegram_id=?", 
                 (total_visits, total_spent, level_info["level"], level_info["discount"], telegram_id))
     conn.commit()
@@ -755,9 +717,18 @@ def get_client_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_
             "next_level_name": next_level_name
         },
         "next_booking": dict(next_booking) if next_booking else None,
-        "recent_bookings": [dict(b) for b in bookings[:5]],
-        "available_promos": [dict(p) for p in promos]
+        "recent_bookings": [dict(b) for b in bookings[:5]]
     }
+
+# ========== НОВЫЙ ЭНДПОИНТ ДЛЯ АКТИВНЫХ ПРОМОКОДОВ ==========
+@app.get("/promocodes/active")
+def get_active_promocodes(conn: sqlite3.Connection = Depends(get_db)):
+    promos = conn.execute("""
+        SELECT * FROM promocodes 
+        WHERE expires_at >= date('now') AND used_count < uses_limit
+        ORDER BY discount DESC
+    """).fetchall()
+    return [dict(p) for p in promos]
 
 @app.patch("/client/settings/{telegram_id}")
 def update_client_settings(telegram_id: str, data: ClientSettingsUpdate, conn: sqlite3.Connection = Depends(get_db)):
