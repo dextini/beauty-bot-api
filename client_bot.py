@@ -22,7 +22,6 @@ dp = Dispatcher()
 ADMIN_IDS = [868528632]
 
 
-# ✅ ИСПРАВЛЕНО: единая функция с таймаутом
 async def api_request(method: str, endpoint: str, data: dict = None):
     url = f"{API_URL}{endpoint}"
     timeout = aiohttp.ClientTimeout(total=30)
@@ -102,6 +101,137 @@ def subscription_keyboard():
     ])
 
 
+# ========== 🔔 НОВАЯ ФУНКЦИЯ: УВЕДОМЛЕНИЕ МАСТЕРУ ==========
+async def notify_master_new_booking(booking_data: dict):
+    """
+    Отправляет мастеру уведомление о новой записи
+    booking_data: { id, client_name, service_name, date, time, price, master_telegram_id, master_id }
+    """
+    master_telegram_id = booking_data.get("master_telegram_id")
+    if not master_telegram_id:
+        logger.error("Нет master_telegram_id в данных записи")
+        return
+    
+    # Красивое сообщение
+    message_text = (
+        f"🌸 *НОВАЯ ЗАПИСЬ!* 🌸\n\n"
+        f"👤 *Клиент:* {booking_data.get('client_name', 'Не указано')}\n"
+        f"💅 *Услуга:* {booking_data.get('service_name', 'Не указано')}\n"
+        f"📅 *Дата:* {booking_data.get('date', 'Не указано')}\n"
+        f"⏰ *Время:* {booking_data.get('time', 'Не указано')}\n"
+        f"💰 *Стоимость:* {booking_data.get('price', 0)} ₽\n"
+        f"🆔 *Номер записи:* #{booking_data.get('id', '?')}\n\n"
+        f"⚡ *Действия:*"
+    )
+    
+    # Кнопки для мастера
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_booking_{booking_data['id']}"),
+            InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel_booking_{booking_data['id']}")
+        ],
+        [InlineKeyboardButton(text="💬 Написать клиенту", callback_data=f"chat_client_{booking_data['id']}")],
+        [InlineKeyboardButton(text="📋 Открыть кабинет", web_app=WebAppInfo(url="https://project-ev8r3.vercel.app"))]
+    ])
+    
+    try:
+        await bot.send_message(
+            chat_id=int(master_telegram_id),
+            text=message_text,
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+        logger.info(f"Уведомление отправлено мастеру {master_telegram_id} о записи #{booking_data['id']}")
+    except Exception as e:
+        logger.error(f"Ошибка отправки уведомления мастеру: {e}")
+
+
+# ========== WEBHOOK ДЛЯ ПРИЁМА УВЕДОМЛЕНИЙ ОТ API ==========
+async def process_new_booking_webhook(booking_data: dict):
+    """Вызывается из API при создании новой записи"""
+    await notify_master_new_booking(booking_data)
+
+
+# ========== ОБРАБОТЧИКИ КНОПОК ИЗ УВЕДОМЛЕНИЯ ==========
+@dp.callback_query(F.data.startswith("confirm_booking_"))
+async def confirm_booking(callback: types.CallbackQuery):
+    booking_id = int(callback.data.split("_")[2])
+    
+    # Отправляем запрос на API
+    result = await api_request("PATCH", f"/bookings/{booking_id}/status?status=confirmed")
+    
+    if result:
+        await callback.message.edit_text(
+            callback.message.text + "\n\n✅ *Запись подтверждена!*",
+            parse_mode="Markdown"
+        )
+        await callback.answer("✅ Запись подтверждена!", show_alert=True)
+        
+        # Отправляем уведомление клиенту (если есть chat_id)
+        # Здесь можно добавить уведомление клиенту
+    else:
+        await callback.answer("❌ Ошибка подтверждения", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("cancel_booking_"))
+async def cancel_booking(callback: types.CallbackQuery):
+    booking_id = int(callback.data.split("_")[2])
+    
+    result = await api_request("PATCH", f"/bookings/{booking_id}/status?status=cancelled")
+    
+    if result:
+        await callback.message.edit_text(
+            callback.message.text + "\n\n❌ *Запись отменена!*",
+            parse_mode="Markdown"
+        )
+        await callback.answer("❌ Запись отменена", show_alert=True)
+    else:
+        await callback.answer("❌ Ошибка отмены", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("chat_client_"))
+async def chat_with_client(callback: types.CallbackQuery):
+    booking_id = int(callback.data.split("_")[2])
+    
+    # Получаем данные о записи
+    booking = await api_request("GET", f"/bookings/{booking_id}")
+    if not booking:
+        await callback.answer("❌ Запись не найдена", show_alert=True)
+        return
+    
+    client_telegram_id = booking.get("client_telegram_id")
+    if not client_telegram_id:
+        await callback.answer("❌ Не удалось найти клиента", show_alert=True)
+        return
+    
+    # Создаём токен для чата
+    import secrets
+    chat_token = secrets.token_urlsafe(32)
+    
+    # Сохраняем токен в БД (нужно добавить эндпоинт)
+    await api_request("POST", "/chat/create", {
+        "booking_id": booking_id,
+        "master_id": callback.from_user.id,
+        "client_id": client_telegram_id,
+        "token": chat_token
+    })
+    
+    chat_link = f"https://t.me/pinkspotvelur_bot?start=chat_{chat_token}"
+    
+    await callback.message.answer(
+        f"💬 *Чат с клиентом*\n\n"
+        f"👤 Клиент: {booking.get('client_name')}\n\n"
+        f"🔗 Ссылка для чата:\n`{chat_link}`\n\n"
+        f"📱 *ИЛИ* отправьте клиенту эту ссылку в Telegram",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📤 Открыть чат в Telegram", url=chat_link)]
+        ])
+    )
+    await callback.answer()
+
+
+# ========== ОСНОВНОЙ ХЕНДЛЕР /start ==========
 @dp.message(CommandStart())
 async def start(message: types.Message):
     user_id = message.from_user.id
@@ -326,7 +456,7 @@ async def check_subscription_callback(callback: types.CallbackQuery):
         await callback.answer("❌ Ты ещё не подписан. Нажми на кнопку «Подписаться» и попробуй снова.", show_alert=True)
 
 
-# ✅ ИСПРАВЛЕНО: единый обработчик для цифрового ввода админа
+# ========== ЕДИНЫЙ ОБРАБОТЧИК ДЛЯ ЦИФРОВОГО ВВОДА АДМИНА ==========
 @dp.message(lambda msg: msg.from_user.id in ADMIN_IDS and msg.text and msg.text.strip().isdigit())
 async def handle_admin_digit_input(message: types.Message):
     text = message.text.strip()
@@ -358,7 +488,7 @@ async def handle_admin_digit_input(message: types.Message):
             await message.answer("❌ Ошибка при добавлении мастера")
 
 
-# ✅ ИСПРАВЛЕНО: обработчик промокода
+# ========== ОБРАБОТЧИК ПРОМОКОДА ==========
 @dp.message(lambda msg: msg.from_user.id in ADMIN_IDS and len(msg.text.split()) == 3)
 async def handle_add_promo(message: types.Message):
     parts = message.text.split()
@@ -404,6 +534,7 @@ async def handle_add_promo(message: types.Message):
         await message.answer("❌ Ошибка при создании промокода")
 
 
+# ========== ДРУГИЕ КОМАНДЫ ==========
 @dp.message(Command("close_chat"))
 async def close_chat(message: types.Message):
     await message.answer(
@@ -436,6 +567,7 @@ async def help_command(message: types.Message):
     )
 
 
+# ========== ЗАПУСК БОТА ==========
 async def main():
     logger.info("🚀 Бот запущен")
     logger.info(f"👑 Админы: {ADMIN_IDS}")
