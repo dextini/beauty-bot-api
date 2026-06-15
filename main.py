@@ -1005,6 +1005,212 @@ def admin_get_stats(conn: sqlite3.Connection = Depends(get_db)):
     revenue = conn.execute("SELECT SUM(price) FROM bookings b JOIN services s ON b.service_id=s.id WHERE b.status='confirmed'").fetchone()[0] or 0
     return {"masters": masters, "total_bookings": bookings, "confirmed": confirmed, "pending": pending, "reviews": reviews, "revenue": revenue}
 
+# ========== ДОБАВЛЕННЫЕ ЭНДПОИНТЫ ДЛЯ АДМИНКИ ==========
+
+@app.post("/masters")
+def create_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    """Создание мастера (для админ-панели)"""
+    telegram_id = data.get("telegram_id")
+    name = data.get("name", "Новый мастер")
+    lat = data.get("lat", 55.751244)
+    lon = data.get("lon", 37.618423)
+    description = data.get("description", "")
+    
+    # Проверяем, не существует ли уже
+    if telegram_id:
+        existing = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
+        if existing:
+            raise HTTPException(400, f"Мастер с Telegram ID {telegram_id} уже существует")
+    
+    cur = conn.execute("""
+        INSERT INTO masters (telegram_id, name, lat, lon, description)
+        VALUES (?, ?, ?, ?, ?)
+        RETURNING id
+    """, (telegram_id, name, lat, lon, description))
+    conn.commit()
+    
+    master_id = cur.lastrowid
+    return {"id": master_id, "status": "created"}
+
+@app.patch("/masters/{master_id}")
+def update_master_admin(master_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    """Обновление мастера (для назначения Telegram ID)"""
+    updates = []
+    params = []
+    
+    if "telegram_id" in data and data["telegram_id"]:
+        updates.append("telegram_id = ?")
+        params.append(data["telegram_id"])
+    if "name" in data and data["name"]:
+        updates.append("name = ?")
+        params.append(data["name"])
+    if "description" in data:
+        updates.append("description = ?")
+        params.append(data["description"])
+    
+    if updates:
+        params.append(master_id)
+        conn.execute(f"UPDATE masters SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+    
+    return {"status": "updated"}
+
+@app.delete("/masters/{master_id}")
+def delete_master_admin(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    """Удаление мастера"""
+    conn.execute("DELETE FROM services WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM bookings WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM days_off WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM quick_replies WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM portfolio WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM favorites WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM blacklist WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM reviews WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM waitlist WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM masters WHERE id = ?", (master_id,))
+    conn.commit()
+    return {"status": "deleted"}
+
+@app.post("/promocodes")
+def create_promocode(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    """Создание промокода (для админ-панели)"""
+    code = data.get("code", "").upper()
+    discount_percent = data.get("discount_percent")
+    expires_at = data.get("expires_at")
+    max_uses = data.get("max_uses", 100)
+    
+    if not code or not discount_percent or not expires_at:
+        raise HTTPException(400, "code, discount_percent, expires_at required")
+    
+    conn.execute("""
+        INSERT OR REPLACE INTO promocodes (code, discount, expires_at, uses_limit, used_count)
+        VALUES (?, ?, ?, ?, 0)
+    """, (code, discount_percent, expires_at, max_uses))
+    conn.commit()
+    
+    return {"status": "created"}
+
+@app.get("/promocodes")
+def get_promocodes(conn: sqlite3.Connection = Depends(get_db)):
+    """Список промокодов"""
+    promos = conn.execute("SELECT * FROM promocodes ORDER BY created_at DESC").fetchall()
+    return [dict(p) for p in promos]
+
+@app.get("/client/profile/{telegram_id}")
+def get_client_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    """Профиль клиента"""
+    # Статистика клиента
+    bookings = conn.execute("""
+        SELECT COUNT(*) as total, 
+               SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) as confirmed,
+               SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled
+        FROM bookings WHERE client_telegram_id = ?
+    """, (telegram_id,)).fetchone()
+    
+    # Следующая запись
+    next_booking = conn.execute("""
+        SELECT b.*, m.name as master_name, s.name as service_name
+        FROM bookings b
+        JOIN masters m ON b.master_id = m.id
+        JOIN services s ON b.service_id = s.id
+        WHERE b.client_telegram_id = ? AND b.status = 'confirmed' AND b.date >= date('now')
+        ORDER BY b.date ASC, b.time ASC LIMIT 1
+    """, (telegram_id,)).fetchone()
+    
+    # Последние записи
+    recent = conn.execute("""
+        SELECT b.*, m.name as master_name, s.name as service_name
+        FROM bookings b
+        JOIN masters m ON b.master_id = m.id
+        JOIN services s ON b.service_id = s.id
+        WHERE b.client_telegram_id = ? AND b.status = 'confirmed'
+        ORDER BY b.date DESC, b.time DESC LIMIT 5
+    """, (telegram_id,)).fetchall()
+    
+    return {
+        "stats": dict(bookings) if bookings else {"total": 0, "confirmed": 0, "cancelled": 0},
+        "next_booking": dict(next_booking) if next_booking else None,
+        "recent_bookings": [dict(r) for r in recent],
+        "level": "Новичок",
+        "level_discount": 0,
+        "level_badge": "🌱"
+    }
+
+@app.get("/api/reminder")
+def test_reminder_endpoint():
+    """Тестовый эндпоинт для напоминаний"""
+    return {"status": "ok", "message": "Reminder endpoint works"}
+
+@app.post("/api/reminder")
+async def send_reminder_api(data: dict):
+    """API для отправки напоминаний"""
+    user_id = data.get("user_id")
+    hours_before = data.get("hours_before")
+    message = data.get("message")
+    
+    logger.info(f"REMINDER: to {user_id} ({hours_before}h): {message}")
+    
+    # Отправляем через Telegram
+    if user_id:
+        await send_telegram_message(str(user_id), message)
+    
+    return {"status": "sent"}
+
+@app.post("/api/waitlist/add")
+def add_waitlist_api(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    """API для добавления в лист ожидания"""
+    user_id = data.get("user_id")
+    service = data.get("service")
+    master_id = data.get("master_id")
+    
+    conn.execute("""
+        INSERT OR IGNORE INTO waitlist (client_telegram_id, service_id, master_id, desired_date)
+        VALUES (?, ?, ?, date('now'))
+    """, (user_id, None, master_id))
+    conn.commit()
+    
+    return {"status": "added"}
+
+@app.post("/api/review")
+def add_review_api(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    """API для добавления отзыва"""
+    user_id = data.get("user_id")
+    master_id = data.get("master_id")
+    rating = data.get("rating")
+    comment = data.get("comment", "")
+    
+    conn.execute("""
+        INSERT INTO reviews (master_id, client_name, rating, comment)
+        VALUES (?, ?, ?, ?)
+    """, (master_id, str(user_id), rating, comment))
+    conn.commit()
+    
+    # Обновляем рейтинг мастера
+    conn.execute("""
+        UPDATE masters SET rating = (
+            SELECT AVG(rating) FROM reviews WHERE master_id = ?
+        ) WHERE id = ?
+    """, (master_id, master_id))
+    conn.commit()
+    
+    return {"status": "created"}
+
+@app.post("/api/repeat/trigger")
+async def repeat_trigger_api(data: dict):
+    """API для триггера 'Пора повторить'"""
+    user_id = data.get("user_id")
+    
+    msg = "💅 *Пора повторить процедуру!* 💅\n\nВы делали маникюр 3 недели назад. Время обновить покрытие! Запишитесь прямо сейчас! 🌸"
+    
+    if user_id:
+        await send_telegram_message(str(user_id), msg)
+    
+    return {"status": "triggered"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+
 # ========== ГЛАВНАЯ ==========
 @app.get("/")
 def root():
