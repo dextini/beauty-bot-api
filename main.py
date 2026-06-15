@@ -253,112 +253,129 @@ async def init_db():
         )
     """)
     
-    # ========== ВОССТАНОВЛЕНИЕ МАСТЕРОВ ==========
+    # Восстанавливаем мастеров
     await restore_masters()
 
 async def restore_masters():
     """Восстанавливает мастеров, если таблица пустая"""
-    count = await db.fetchval("SELECT COUNT(*) FROM masters")
-    if count > 0:
-        print(f"✅ Мастера уже есть в БД: {count} шт.")
+    try:
+        count = await db.fetchval("SELECT COUNT(*) FROM masters")
+        if count > 0:
+            print(f"✅ Мастера уже есть в БД: {count} шт.")
+            return
+    except Exception as e:
+        print(f"⚠️ Ошибка проверки мастеров: {e}")
         return
     
     print("🔄 Восстанавливаем мастеров...")
     
-    # Мастер 1: Алина
-    await db.execute("""
-        INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
-        VALUES (777000, 'Алина Козлова', 47.222078, 39.720358, 
-               '🌸 Мастер маникюра с 5-летним опытом. Делаю классику, гель-лак, дизайн.',
-               '09:00', '21:00', '💅', 4.9, 128)
-    """)
-    
-    # Мастер 2: Елена
-    await db.execute("""
-        INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
-        VALUES (777001, 'Елена Соколова', 47.225000, 39.725000,
-               '👑 Топ-мастер по бровам и ресницам. Стаж 7 лет.',
-               '10:00', '20:00', '✏️', 4.95, 256)
-    """)
-    
-    # Мастер 3: Дмитрий
-    await db.execute("""
-        INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
-        VALUES (777002, 'Дмитрий Волков', 47.218000, 39.718000,
-               '💈 Мужской мастер. Стрижки, бороды, укладки.',
-               '11:00', '22:00', '✂️', 4.85, 89)
-    """)
-    
-    # Мастер 4: Анна
-    await db.execute("""
-        INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
-        VALUES (777003, 'Анна Морозова', 47.230000, 39.730000,
-               '💆‍♀️ Косметолог. Чистки лица, пилинги, массажи.',
-               '09:30', '19:30', '🧴', 4.92, 312)
-    """)
-    
-    # Услуги Алины (master_id=1)
-    await db.execute("""
-        INSERT INTO services (master_id, name, price, duration_min) VALUES
-        (1, 'Маникюр классический', 1200, 60),
-        (1, 'Маникюр с покрытием гель-лак', 2000, 90),
-        (1, 'Педикюр', 2500, 90),
-        (1, 'SPA-уход за руками', 1500, 60)
-    """)
-    
-    # Услуги Елены (master_id=2)
-    await db.execute("""
-        INSERT INTO services (master_id, name, price, duration_min) VALUES
-        (2, 'Коррекция бровей', 800, 40),
-        (2, 'Окрашивание бровей', 1000, 50),
-        (2, 'Ламинирование бровей', 2000, 70),
-        (2, 'Ламинирование ресниц', 2500, 90),
-        (2, 'Наращивание ресниц 2D', 3000, 120)
-    """)
-    
-    # Услуги Дмитрия (master_id=3)
-    await db.execute("""
-        INSERT INTO services (master_id, name, price, duration_min) VALUES
-        (3, 'Мужская стрижка', 1200, 45),
-        (3, 'Стрижка + борода', 1800, 60),
-        (3, 'Моделирование бороды', 800, 30),
-        (3, 'Укладка', 600, 25)
-    """)
-    
-    # Услуги Анны (master_id=4)
-    await db.execute("""
-        INSERT INTO services (master_id, name, price, duration_min) VALUES
-        (4, 'Чистка лица ультразвуковая', 2500, 60),
-        (4, 'Чистка лица комбинированная', 3500, 90),
-        (4, 'Пилинг лица', 2000, 45),
-        (4, 'Массаж лица', 1800, 50)
-    """)
-    
-    # Добавляем портфолио "до/после"
-    await db.execute("""
-        INSERT INTO master_before_after (master_id, before_photo, after_photo, description) VALUES
-        (1, 'https://images.unsplash.com/photo-1604654894610-df63bc536371?w=400', 'https://images.unsplash.com/photo-1604654894610-df63bc536371?w=400', 'Классический маникюр'),
-        (2, 'https://images.unsplash.com/photo-1512290923902-8a9f81dc236c?w=400', 'https://images.unsplash.com/photo-1512290923902-8a9f81dc236c?w=400', 'Коррекция бровей')
-    """)
-    
-    # Добавляем промокоды
-    await db.execute("""
-        INSERT INTO promocodes (code, discount_percent, expires_at, max_uses) VALUES
-        ('WELCOME10', 10, NOW() + INTERVAL '30 days', 100),
-        ('BEAUTY20', 20, NOW() + INTERVAL '15 days', 50)
-    """)
-    
-    print(f"✅ Восстановлено мастеров: {await db.fetchval('SELECT COUNT(*) FROM masters')}")
-    print(f"✅ Восстановлено услуг: {await db.fetchval('SELECT COUNT(*) FROM services')}")
+    try:
+        # Мастер 1: Алина
+        await db.execute("""
+            INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
+            VALUES (777000, 'Алина Козлова', 47.222078, 39.720358, 
+                   '🌸 Мастер маникюра с 5-летним опытом. Делаю классику, гель-лак, дизайн.',
+                   '09:00', '21:00', '💅', 4.9, 128)
+        """)
+        
+        # Мастер 2: Елена
+        await db.execute("""
+            INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
+            VALUES (777001, 'Елена Соколова', 47.225000, 39.725000,
+                   '👑 Топ-мастер по бровам и ресницам. Стаж 7 лет.',
+                   '10:00', '20:00', '✏️', 4.95, 256)
+        """)
+        
+        # Мастер 3: Дмитрий
+        await db.execute("""
+            INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
+            VALUES (777002, 'Дмитрий Волков', 47.218000, 39.718000,
+                   '💈 Мужской мастер. Стрижки, бороды, укладки.',
+                   '11:00', '22:00', '✂️', 4.85, 89)
+        """)
+        
+        # Мастер 4: Анна
+        await db.execute("""
+            INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
+            VALUES (777003, 'Анна Морозова', 47.230000, 39.730000,
+                   '💆‍♀️ Косметолог. Чистки лица, пилинги, массажи.',
+                   '09:30', '19:30', '🧴', 4.92, 312)
+        """)
+        
+        # Услуги Алины (master_id=1)
+        await db.execute("""
+            INSERT INTO services (master_id, name, price, duration_min) VALUES
+            (1, 'Маникюр классический', 1200, 60),
+            (1, 'Маникюр с покрытием гель-лак', 2000, 90),
+            (1, 'Педикюр', 2500, 90),
+            (1, 'SPA-уход за руками', 1500, 60)
+        """)
+        
+        # Услуги Елены (master_id=2)
+        await db.execute("""
+            INSERT INTO services (master_id, name, price, duration_min) VALUES
+            (2, 'Коррекция бровей', 800, 40),
+            (2, 'Окрашивание бровей', 1000, 50),
+            (2, 'Ламинирование бровей', 2000, 70),
+            (2, 'Ламинирование ресниц', 2500, 90),
+            (2, 'Наращивание ресниц 2D', 3000, 120)
+        """)
+        
+        # Услуги Дмитрия (master_id=3)
+        await db.execute("""
+            INSERT INTO services (master_id, name, price, duration_min) VALUES
+            (3, 'Мужская стрижка', 1200, 45),
+            (3, 'Стрижка + борода', 1800, 60),
+            (3, 'Моделирование бороды', 800, 30),
+            (3, 'Укладка', 600, 25)
+        """)
+        
+        # Услуги Анны (master_id=4)
+        await db.execute("""
+            INSERT INTO services (master_id, name, price, duration_min) VALUES
+            (4, 'Чистка лица ультразвуковая', 2500, 60),
+            (4, 'Чистка лица комбинированная', 3500, 90),
+            (4, 'Пилинг лица', 2000, 45),
+            (4, 'Массаж лица', 1800, 50)
+        """)
+        
+        # Добавляем портфолио "до/после"
+        await db.execute("""
+            INSERT INTO master_before_after (master_id, before_photo, after_photo, description) VALUES
+            (1, 'https://images.unsplash.com/photo-1604654894610-df63bc536371?w=400', 'https://images.unsplash.com/photo-1604654894610-df63bc536371?w=400', 'Классический маникюр'),
+            (2, 'https://images.unsplash.com/photo-1512290923902-8a9f81dc236c?w=400', 'https://images.unsplash.com/photo-1512290923902-8a9f81dc236c?w=400', 'Коррекция бровей')
+        """)
+        
+        # Добавляем промокоды
+        await db.execute("""
+            INSERT INTO promocodes (code, discount_percent, expires_at, max_uses) VALUES
+            ('WELCOME10', 10, NOW() + INTERVAL '30 days', 100),
+            ('BEAUTY20', 20, NOW() + INTERVAL '15 days', 50)
+        """)
+        
+        print(f"✅ Восстановлено мастеров: {await db.fetchval('SELECT COUNT(*) FROM masters')}")
+        print(f"✅ Восстановлено услуг: {await db.fetchval('SELECT COUNT(*) FROM services')}")
+    except Exception as e:
+        print(f"❌ Ошибка восстановления мастеров: {e}")
 
 # ========== МАСТЕРА ==========
 @app.get("/masters")
 async def get_masters():
-    rows = await db.fetch("SELECT id, name, lat, lon, rating, description, icon FROM masters")
+    rows = await db.fetch("SELECT id, name, lat, lon, rating, description, icon, reviews_count FROM masters")
     result = []
     for r in rows:
         services = await db.fetch("SELECT id, name, price, duration_min FROM services WHERE master_id = $1", r["id"])
-        result.append(dict(r, services=[dict(s) for s in services]))
+        result.append({
+            "id": r["id"],
+            "name": r["name"],
+            "lat": r["lat"],
+            "lon": r["lon"],
+            "rating": r["rating"],
+            "description": r["description"],
+            "icon": r["icon"],
+            "reviews_count": r["reviews_count"],
+            "services": [dict(s) for s in services]
+        })
     return result
 
 @app.get("/masters/{master_id}")
@@ -406,7 +423,7 @@ async def create_booking(booking: BookingCreate):
     if not service:
         raise HTTPException(400, "Service not found")
     
-    [sh, sm] = map(int, booking.time.split(':'))
+    sh, sm = map(int, booking.time.split(':'))
     new_start = sh * 60 + sm
     new_end = new_start + service["duration_min"]
     
@@ -418,15 +435,15 @@ async def create_booking(booking: BookingCreate):
     """, booking.master_id, booking.date)
     
     for ex in existing:
-        [eh, em] = map(int, ex["time"].split(':'))
+        eh, em = map(int, ex["time"].split(':'))
         ex_start = eh * 60 + em
         ex_end = ex_start + ex["duration_min"]
         if not (new_end <= ex_start or new_start >= ex_end):
-            raise HTTPException(400, "Time slot overlaps")
+            raise HTTPException(400, "Time slot overlaps with existing booking")
     
     booking_id = await db.execute("""
-        INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time, price, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+        INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time, price, status, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', NOW())
         RETURNING id
     """, booking.master_id, booking.service_id, booking.client_name, booking.client_telegram_id,
         booking.client_phone, booking.date, booking.time, service["price"])
@@ -498,15 +515,15 @@ async def get_client_profile(telegram_id: str):
     
     total_visits = stats["total_visits"] if stats else 0
     if total_visits >= 50:
-        level, discount, badge, next_level = "Платина", 20, "💎", 0
+        level, discount, badge = "Платина", 20, "💎"
     elif total_visits >= 20:
-        level, discount, badge, next_level = "Золото", 15, "🥇", 50
+        level, discount, badge = "Золото", 15, "🥇"
     elif total_visits >= 10:
-        level, discount, badge, next_level = "Серебро", 10, "🥈", 20
+        level, discount, badge = "Серебро", 10, "🥈"
     elif total_visits >= 5:
-        level, discount, badge, next_level = "Бронза", 5, "🥉", 10
+        level, discount, badge = "Бронза", 5, "🥉"
     else:
-        level, discount, badge, next_level = "Новичок", 0, "🌱", 5
+        level, discount, badge = "Новичок", 0, "🌱"
     
     return {
         "stats": dict(stats) if stats else {"total_visits": 0, "reviews_count": 0, "total_spent": 0, "cashback_balance": 0},
@@ -515,44 +532,47 @@ async def get_client_profile(telegram_id: str):
         "level": level,
         "level_discount": discount,
         "level_badge": badge,
-        "visits_to_next_level": max(0, next_level - total_visits)
+        "visits_to_next_level": max(0, (5 if total_visits < 5 else 10 if total_visits < 10 else 20 if total_visits < 20 else 50 if total_visits < 50 else 0) - total_visits)
     }
 
 # ========== УМНЫЕ ФУНКЦИИ ==========
 @app.post("/api/reminder")
 async def send_reminder(data: ReminderRequest):
-    print(f"[REMINDER] To {data.user_id}: {data.message}")
+    print(f"[REMINDER] To {data.user_id} (за {data.hours_before}ч): {data.message}")
     return {"status": "ok"}
 
 @app.post("/api/waitlist/add")
 async def add_to_waitlist(data: WaitlistRequest):
     await db.execute("""
-        INSERT INTO waitlist (user_id, service) VALUES ($1, $2)
-        ON CONFLICT DO NOTHING
+        INSERT INTO waitlist (user_id, service, created_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (user_id, service) DO NOTHING
     """, data.user_id, data.service)
     return {"status": "ok"}
 
 @app.post("/api/review")
 async def add_review(data: ReviewDirectCreate):
     await db.execute("""
-        INSERT INTO reviews (user_id, master_id, rating, comment)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO reviews (user_id, master_id, rating, comment, created_at)
+        VALUES ($1, $2, $3, $4, NOW())
     """, data.user_id, data.master_id, data.rating, data.comment)
     
     avg = await db.fetchval("SELECT AVG(rating) FROM reviews WHERE master_id = $1", data.master_id)
-    await db.execute("UPDATE masters SET rating = $1 WHERE id = $2", round(avg, 1), data.master_id)
+    if avg:
+        await db.execute("UPDATE masters SET rating = $1 WHERE id = $2", round(avg, 1), data.master_id)
     
     return {"status": "ok"}
 
 @app.post("/api/repeat/trigger")
 async def trigger_repeat(data: dict):
-    print(f"[REPEAT] To {data.get('user_id')}: Пора повторить!")
+    user_id = data.get("user_id")
+    print(f"[REPEAT] To {user_id}: Пора повторить процедуру! 💅")
     return {"status": "ok"}
 
 # ========== ПОРТФОЛИО ДО/ПОСЛЕ ==========
 @app.get("/masters/{master_id}/before-after")
 async def get_before_after(master_id: int):
-    rows = await db.fetch("SELECT * FROM master_before_after WHERE master_id = $1", master_id)
+    rows = await db.fetch("SELECT id, before_photo, after_photo, description FROM master_before_after WHERE master_id = $1 ORDER BY created_at DESC", master_id)
     return [dict(r) for r in rows]
 
 @app.post("/master/{telegram_id}/before-after")
@@ -561,8 +581,8 @@ async def add_before_after(telegram_id: int, data: BeforeAfterCreate):
     if not master:
         raise HTTPException(404, "Master not found")
     await db.execute("""
-        INSERT INTO master_before_after (master_id, before_photo, after_photo, description)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO master_before_after (master_id, before_photo, after_photo, description, created_at)
+        VALUES ($1, $2, $3, $4, NOW())
     """, master["id"], data.before_photo, data.after_photo, data.description)
     return {"status": "ok"}
 
@@ -580,7 +600,7 @@ async def get_master_services(telegram_id: int):
     master = await db.fetchrow("SELECT id FROM masters WHERE telegram_id = $1", telegram_id)
     if not master:
         return []
-    rows = await db.fetch("SELECT id, name, price, duration_min FROM services WHERE master_id = $1", master["id"])
+    rows = await db.fetch("SELECT id, name, price, duration_min FROM services WHERE master_id = $1 ORDER BY id", master["id"])
     return [dict(r) for r in rows]
 
 @app.post("/master/{telegram_id}/services")
@@ -613,22 +633,25 @@ async def get_master_stats(telegram_id: int):
     pending = await db.fetchval("SELECT COUNT(*) FROM bookings WHERE master_id = $1 AND status = 'pending'", master["id"])
     revenue = await db.fetchval("SELECT COALESCE(SUM(price), 0) FROM bookings WHERE master_id = $1 AND status = 'confirmed'", master["id"])
     
-    return {"completed": completed, "pending": pending, "revenue": revenue}
+    return {"completed": completed or 0, "pending": pending or 0, "revenue": revenue or 0}
 
 @app.patch("/master/{telegram_id}/work-hours")
 async def update_work_hours(telegram_id: int, data: dict):
+    work_start = data.get("work_start", "09:00")
+    work_end = data.get("work_end", "21:00")
     await db.execute("""
         UPDATE masters SET work_start = $1, work_end = $2
         WHERE telegram_id = $3
-    """, data["work_start"], data["work_end"], telegram_id)
+    """, work_start, work_end, telegram_id)
     return {"status": "ok"}
 
 @app.patch("/master/{telegram_id}/profile")
 async def update_master_profile(telegram_id: int, data: dict):
+    description = data.get("description", "")
     await db.execute("""
         UPDATE masters SET description = $1
         WHERE telegram_id = $2
-    """, data.get("description", ""), telegram_id)
+    """, description, telegram_id)
     return {"status": "ok"}
 
 # ========== ИЗБРАННОЕ ==========
@@ -647,7 +670,7 @@ async def add_favorite(master_id: int, client_telegram_id: str):
     await db.execute("""
         INSERT INTO favorites (client_telegram_id, master_id)
         VALUES ($1, $2)
-        ON CONFLICT DO NOTHING
+        ON CONFLICT (client_telegram_id, master_id) DO NOTHING
     """, client_telegram_id, master_id)
     return {"status": "ok"}
 
@@ -665,7 +688,7 @@ async def get_quick_replies(telegram_id: int):
     master = await db.fetchrow("SELECT id FROM masters WHERE telegram_id = $1", telegram_id)
     if not master:
         return []
-    rows = await db.fetch("SELECT id, title, message FROM quick_replies WHERE master_id = $1", master["id"])
+    rows = await db.fetch("SELECT id, title, message FROM quick_replies WHERE master_id = $1 ORDER BY id", master["id"])
     return [dict(r) for r in rows]
 
 @app.post("/master/{telegram_id}/quick-replies")
@@ -719,7 +742,18 @@ async def get_active_promocodes():
 
 @app.post("/apply-promo")
 async def apply_promo(data: dict):
-    return {"status": "ok", "discount_percent": 10}
+    promo_code = data.get("promo_code", "").upper()
+    user_id = data.get("user_id")
+    
+    promo = await db.fetchrow("""
+        SELECT discount_percent FROM promocodes
+        WHERE code = $1 AND expires_at > NOW() AND active = true
+    """, promo_code)
+    
+    if not promo:
+        raise HTTPException(400, "Invalid or expired promo code")
+    
+    return {"status": "ok", "discount_percent": promo["discount_percent"]}
 
 # ========== НАСТРОЙКИ КЛИЕНТА ==========
 @app.patch("/client/settings/{telegram_id}")
@@ -728,12 +762,12 @@ async def update_client_settings(telegram_id: str, settings: ClientSettingsUpdat
         INSERT INTO client_settings (telegram_id, push_enabled, tg_notify_enabled, quiet_hour_start, quiet_hour_end, email, phone)
         VALUES ($1, COALESCE($2, TRUE), COALESCE($3, TRUE), COALESCE($4, '22:00'), COALESCE($5, '09:00'), $6, $7)
         ON CONFLICT (telegram_id) DO UPDATE SET
-            push_enabled = COALESCE(EXCLUDED.push_enabled, client_settings.push_enabled),
-            tg_notify_enabled = COALESCE(EXCLUDED.tg_notify_enabled, client_settings.tg_notify_enabled),
-            quiet_hour_start = COALESCE(EXCLUDED.quiet_hour_start, client_settings.quiet_hour_start),
-            quiet_hour_end = COALESCE(EXCLUDED.quiet_hour_end, client_settings.quiet_hour_end),
-            email = COALESCE(EXCLUDED.email, client_settings.email),
-            phone = COALESCE(EXCLUDED.phone, client_settings.phone)
+            push_enabled = EXCLUDED.push_enabled,
+            tg_notify_enabled = EXCLUDED.tg_notify_enabled,
+            quiet_hour_start = EXCLUDED.quiet_hour_start,
+            quiet_hour_end = EXCLUDED.quiet_hour_end,
+            email = EXCLUDED.email,
+            phone = EXCLUDED.phone
     """, telegram_id, settings.push_enabled, settings.tg_notify_enabled, 
         settings.quiet_hour_start, settings.quiet_hour_end, settings.email, settings.phone)
     return {"status": "ok"}
@@ -741,7 +775,7 @@ async def update_client_settings(telegram_id: str, settings: ClientSettingsUpdat
 # ========== ЗДОРОВЬЕ ==========
 @app.get("/health")
 async def health_check():
-    return {"status": "ok"}
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
 if __name__ == "__main__":
     import uvicorn
