@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Depends, Request, Form
+from fastapi import FastAPI, HTTPException, Depends, Request, Form, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import sqlite3
@@ -9,10 +9,11 @@ import json
 import secrets
 import uuid
 import base64
+import shutil
+import os
 from datetime import datetime, timedelta
 import asyncio
 import logging
-import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,6 +30,8 @@ MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURS
 
 # === ПУТЬ К БАЗЕ ===
 DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
+PHOTO_DIR = os.path.join(os.getcwd(), "data", "photos")
+os.makedirs(PHOTO_DIR, exist_ok=True)
 
 # === CORS ===
 app.add_middleware(
@@ -111,7 +114,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Таблица мастеров
+    # Таблица мастеров (добавляем avatar)
     c.execute("""CREATE TABLE IF NOT EXISTS masters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT DEFAULT '',
@@ -126,7 +129,8 @@ def init_db():
         bot_token TEXT DEFAULT '',
         description TEXT DEFAULT '',
         icon TEXT DEFAULT '💅',
-        rating REAL DEFAULT 0
+        rating REAL DEFAULT 0,
+        avatar TEXT
     )""")
     
     # Таблица услуг
@@ -275,6 +279,11 @@ def init_db():
     for col in ['reminder_24h_sent', 'reminder_1h_sent', 'reminder_sent']:
         try:
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col} INTEGER DEFAULT 0")
+        except: pass
+    
+    for col in ['avatar']:
+        try:
+            c.execute(f"ALTER TABLE masters ADD COLUMN {col} TEXT")
         except: pass
     
     # Тестовый мастер
@@ -669,7 +678,6 @@ def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection
     conn.execute("UPDATE bookings SET status=? WHERE id=?", (status, booking_id))
     if status == "cancelled":
         conn.execute("UPDATE bookings SET cancelled_at = CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
-        # Уведомляем из листа ожидания
         check_waitlist(booking["master_id"], booking["service_id"], booking["date"], conn)
     conn.commit()
     
@@ -829,24 +837,83 @@ def delete_quick_reply(telegram_id: str, reply_id: int, conn: sqlite3.Connection
     return {"status": "ok"}
 
 # ========== ПОРТФОЛИО ==========
-@app.post("/master/{telegram_id}/portfolio")
-async def add_portfolio_photo(telegram_id: str, photo_url: str = Form(...), description: str = Form(""), conn: sqlite3.Connection = Depends(get_db)):
+@app.post("/master/{telegram_id}/upload-portfolio")
+async def upload_portfolio(telegram_id: str, file: UploadFile = File(...), description: str = Form(""), conn: sqlite3.Connection = Depends(get_db)):
+    """Загрузка фото в портфолио на сервер"""
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
-    conn.execute("INSERT INTO portfolio (master_id, photo_url, description) VALUES (?,?,?)",
-                (master["id"], photo_url, description))
+    
+    ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
+    filename = f"portfolio_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
+    filepath = os.path.join(PHOTO_DIR, filename)
+    
+    with open(filepath, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    photo_url = f"/photos/{filename}"
+    conn.execute("""
+        INSERT INTO portfolio (master_id, photo_url, description)
+        VALUES (?, ?, ?)
+    """, (master["id"], photo_url, description))
     conn.commit()
-    return {"status": "ok"}
+    
+    return {"photo_url": photo_url, "status": "ok"}
 
 @app.delete("/master/{telegram_id}/portfolio/{photo_id}")
 def delete_portfolio_photo(telegram_id: str, photo_id: int, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
+    
+    # Получаем путь к файлу
+    photo = conn.execute("SELECT photo_url FROM portfolio WHERE id=? AND master_id=?", (photo_id, master["id"])).fetchone()
+    if photo and photo["photo_url"]:
+        filename = photo["photo_url"].replace("/photos/", "")
+        filepath = os.path.join(PHOTO_DIR, filename)
+        if os.path.exists(filepath):
+            os.remove(filepath)
+    
     conn.execute("DELETE FROM portfolio WHERE id=? AND master_id=?", (photo_id, master["id"]))
     conn.commit()
     return {"status": "ok"}
+
+# ========== АВАТАР МАСТЕРА ==========
+@app.post("/master/{telegram_id}/upload-avatar")
+async def upload_avatar(telegram_id: str, file: UploadFile = File(...), conn: sqlite3.Connection = Depends(get_db)):
+    """Загрузка аватара мастера на сервер"""
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    
+    ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
+    filename = f"avatar_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
+    filepath = os.path.join(PHOTO_DIR, filename)
+    
+    with open(filepath, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    avatar_url = f"/photos/{filename}"
+    conn.execute("UPDATE masters SET avatar = ? WHERE id = ?", (avatar_url, master["id"]))
+    conn.commit()
+    
+    return {"avatar_url": avatar_url, "status": "ok"}
+
+@app.get("/master/{telegram_id}/avatar")
+def get_master_avatar(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    """Получить аватар мастера"""
+    master = conn.execute("SELECT avatar FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not master or not master["avatar"]:
+        return {"avatar_url": None}
+    return {"avatar_url": master["avatar"]}
+
+@app.get("/photos/{filename}")
+async def get_photo(filename: str):
+    """Получение фото по имени"""
+    filepath = os.path.join(PHOTO_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(404, "Photo not found")
+    return FileResponse(filepath)
 
 # ========== ИЗБРАННОЕ ==========
 @app.post("/favorites/{master_id}")
@@ -1016,7 +1083,6 @@ def create_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     lon = data.get("lon", 37.618423)
     description = data.get("description", "")
     
-    # Проверяем, не существует ли уже
     if telegram_id:
         existing = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
         if existing:
@@ -1025,7 +1091,6 @@ def create_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     cur = conn.execute("""
         INSERT INTO masters (telegram_id, name, lat, lon, description)
         VALUES (?, ?, ?, ?, ?)
-        RETURNING id
     """, (telegram_id, name, lat, lon, description))
     conn.commit()
     
@@ -1099,7 +1164,6 @@ def get_promocodes(conn: sqlite3.Connection = Depends(get_db)):
 @app.get("/client/profile/{telegram_id}")
 def get_client_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     """Профиль клиента"""
-    # Статистика клиента
     bookings = conn.execute("""
         SELECT COUNT(*) as total, 
                SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) as confirmed,
@@ -1107,7 +1171,6 @@ def get_client_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_
         FROM bookings WHERE client_telegram_id = ?
     """, (telegram_id,)).fetchone()
     
-    # Следующая запись
     next_booking = conn.execute("""
         SELECT b.*, m.name as master_name, s.name as service_name
         FROM bookings b
@@ -1117,7 +1180,6 @@ def get_client_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_
         ORDER BY b.date ASC, b.time ASC LIMIT 1
     """, (telegram_id,)).fetchone()
     
-    # Последние записи
     recent = conn.execute("""
         SELECT b.*, m.name as master_name, s.name as service_name
         FROM bookings b
@@ -1150,7 +1212,6 @@ async def send_reminder_api(data: dict):
     
     logger.info(f"REMINDER: to {user_id} ({hours_before}h): {message}")
     
-    # Отправляем через Telegram
     if user_id:
         await send_telegram_message(str(user_id), message)
     
@@ -1185,7 +1246,6 @@ def add_review_api(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     """, (master_id, str(user_id), rating, comment))
     conn.commit()
     
-    # Обновляем рейтинг мастера
     conn.execute("""
         UPDATE masters SET rating = (
             SELECT AVG(rating) FROM reviews WHERE master_id = ?
