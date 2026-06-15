@@ -114,7 +114,6 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Таблица мастеров (добавляем avatar)
     c.execute("""CREATE TABLE IF NOT EXISTS masters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT DEFAULT '',
@@ -133,7 +132,6 @@ def init_db():
         avatar TEXT
     )""")
     
-    # Таблица услуг
     c.execute("""CREATE TABLE IF NOT EXISTS services (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -142,7 +140,6 @@ def init_db():
         duration_min INTEGER
     )""")
     
-    # Таблица записей
     c.execute("""CREATE TABLE IF NOT EXISTS bookings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -165,7 +162,6 @@ def init_db():
         sms_sent INTEGER DEFAULT 0
     )""")
     
-    # Таблица выходных дней
     c.execute("""CREATE TABLE IF NOT EXISTS days_off (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -173,7 +169,6 @@ def init_db():
         UNIQUE(master_id, date)
     )""")
     
-    # Таблица чатов
     c.execute("""CREATE TABLE IF NOT EXISTS chats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         booking_id INTEGER UNIQUE,
@@ -183,7 +178,6 @@ def init_db():
         token TEXT UNIQUE
     )""")
     
-    # Таблица сообщений чата
     c.execute("""CREATE TABLE IF NOT EXISTS chat_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         booking_id INTEGER,
@@ -194,14 +188,12 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Таблица пользователей
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         telegram_id TEXT UNIQUE,
         registered_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Таблица быстрых ответов
     c.execute("""CREATE TABLE IF NOT EXISTS quick_replies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -209,7 +201,6 @@ def init_db():
         message TEXT
     )""")
     
-    # Таблица портфолио
     c.execute("""CREATE TABLE IF NOT EXISTS portfolio (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -218,7 +209,6 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Таблица избранного
     c.execute("""CREATE TABLE IF NOT EXISTS favorites (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         client_telegram_id TEXT,
@@ -226,7 +216,6 @@ def init_db():
         UNIQUE(client_telegram_id, master_id)
     )""")
     
-    # Таблица чёрного списка
     c.execute("""CREATE TABLE IF NOT EXISTS blacklist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -235,7 +224,6 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Таблица промокодов
     c.execute("""CREATE TABLE IF NOT EXISTS promocodes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT UNIQUE,
@@ -246,8 +234,6 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # НОВЫЕ ТАБЛИЦЫ:
-    # Отзывы
     c.execute("""CREATE TABLE IF NOT EXISTS reviews (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -260,7 +246,6 @@ def init_db():
         FOREIGN KEY (booking_id) REFERENCES bookings(id)
     )""")
     
-    # Лист ожидания
     c.execute("""CREATE TABLE IF NOT EXISTS waitlist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -275,7 +260,6 @@ def init_db():
         FOREIGN KEY (service_id) REFERENCES services(id)
     )""")
     
-    # Добавляем недостающие колонки
     for col in ['reminder_24h_sent', 'reminder_1h_sent', 'reminder_sent']:
         try:
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col} INTEGER DEFAULT 0")
@@ -286,7 +270,6 @@ def init_db():
             c.execute(f"ALTER TABLE masters ADD COLUMN {col} TEXT")
         except: pass
     
-    # Тестовый мастер
     c.execute("SELECT COUNT(*) FROM masters WHERE telegram_id = '868528632'")
     if c.fetchone()[0] == 0:
         c.execute("""INSERT INTO masters (name, address, lat, lon, phone, instagram, telegram_id, icon, work_start, work_end, bot_token, description) 
@@ -412,13 +395,11 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
 
 # ========== НАПОМИНАНИЯ (ФОНОВЫЕ ЗАДАЧИ) ==========
 async def send_reminders():
-    """Отправка напоминаний о записи (за 24ч и 1ч)"""
     conn = get_db()
     try:
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
         
-        # За 24 часа
         tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
         reminders_24h = conn.execute("""
             SELECT b.*, m.name as master_name, m.address, s.name as service_name
@@ -433,7 +414,6 @@ async def send_reminders():
             await send_telegram_message(b['client_telegram_id'], msg)
             conn.execute("UPDATE bookings SET reminder_24h_sent = 1 WHERE id = ?", (b['id'],))
         
-        # За 1 час
         hour_later = (now + timedelta(hours=1)).strftime("%H:%M")
         reminders_1h = conn.execute("""
             SELECT b.*, m.name as master_name, s.name as service_name
@@ -453,7 +433,6 @@ async def send_reminders():
         conn.close()
 
 async def check_repeat_reminders():
-    """Проверка, кому пора повторить услугу (20-25 дней назад)"""
     conn = get_db()
     try:
         bookings = conn.execute("""
@@ -478,16 +457,14 @@ async def check_repeat_reminders():
         conn.close()
 
 async def run_background_tasks():
-    """Фоновые задачи (запуск каждые 30 минут)"""
     while True:
         await send_reminders()
-        await asyncio.sleep(1800)  # 30 минут
+        await asyncio.sleep(1800)
 
 async def run_daily_tasks():
-    """Ежедневные задачи (раз в день)"""
     while True:
         await check_repeat_reminders()
-        await asyncio.sleep(86400)  # 24 часа
+        await asyncio.sleep(86400)
 
 @app.on_event("startup")
 async def start_background_tasks():
@@ -692,7 +669,6 @@ def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection
     return {"status": "ok"}
 
 def check_waitlist(master_id: int, service_id: int, date: str, conn: sqlite3.Connection):
-    """Проверка листа ожидания при отмене записи"""
     waitlist = conn.execute("""
         SELECT * FROM waitlist 
         WHERE master_id = ? AND service_id = ? AND notified = 0 
@@ -708,7 +684,6 @@ def check_waitlist(master_id: int, service_id: int, date: str, conn: sqlite3.Con
 # ========== ОТЗЫВЫ ==========
 @app.post("/reviews")
 def submit_review(data: ReviewIn, conn: sqlite3.Connection = Depends(get_db)):
-    """Добавление отзыва"""
     existing = conn.execute("SELECT id FROM reviews WHERE booking_id = ?", (data.booking_id,)).fetchone()
     if existing:
         raise HTTPException(400, "Отзыв уже оставлен")
@@ -719,7 +694,6 @@ def submit_review(data: ReviewIn, conn: sqlite3.Connection = Depends(get_db)):
     """, (data.master_id, data.booking_id, data.client_name, data.rating, data.comment))
     conn.commit()
     
-    # Обновляем рейтинг мастера
     conn.execute("""
         UPDATE masters SET rating = (
             SELECT AVG(rating) FROM reviews WHERE master_id = ?
@@ -739,7 +713,6 @@ def get_master_reviews(master_id: int, conn: sqlite3.Connection = Depends(get_db
 # ========== ЛИСТ ОЖИДАНИЯ ==========
 @app.post("/waitlist")
 def add_to_waitlist(data: WaitlistIn, conn: sqlite3.Connection = Depends(get_db)):
-    """Добавление в лист ожидания"""
     conn.execute("""
         INSERT INTO waitlist (master_id, service_id, client_telegram_id, client_name, desired_date, desired_time)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -839,7 +812,6 @@ def delete_quick_reply(telegram_id: str, reply_id: int, conn: sqlite3.Connection
 # ========== ПОРТФОЛИО ==========
 @app.post("/master/{telegram_id}/upload-portfolio")
 async def upload_portfolio(telegram_id: str, file: UploadFile = File(...), description: str = Form(""), conn: sqlite3.Connection = Depends(get_db)):
-    """Загрузка фото в портфолио на сервер"""
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
@@ -866,7 +838,6 @@ def delete_portfolio_photo(telegram_id: str, photo_id: int, conn: sqlite3.Connec
     if not master:
         raise HTTPException(404, "Master not found")
     
-    # Получаем путь к файлу
     photo = conn.execute("SELECT photo_url FROM portfolio WHERE id=? AND master_id=?", (photo_id, master["id"])).fetchone()
     if photo and photo["photo_url"]:
         filename = photo["photo_url"].replace("/photos/", "")
@@ -878,10 +849,43 @@ def delete_portfolio_photo(telegram_id: str, photo_id: int, conn: sqlite3.Connec
     conn.commit()
     return {"status": "ok"}
 
+# ========== БАЗОВЫЙ ЭНДПОИНТ ДЛЯ ЗАГРУЗКИ ФОТО (ОБХОД CORS) ==========
+@app.post("/master/{telegram_id}/portfolio-base64")
+async def add_portfolio_base64(telegram_id: str, data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    """Загрузка фото в портфолио через Base64 (обход CORS)"""
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    
+    import base64 as b64
+    photo_base64 = data.get("photo_base64")
+    filename = data.get("filename", "photo.jpg")
+    description = data.get("description", "")
+    
+    if not photo_base64:
+        raise HTTPException(400, "photo_base64 required")
+    
+    image_data = b64.b64decode(photo_base64)
+    
+    ext = filename.split(".")[-1] if "." in filename else "jpg"
+    filename = f"portfolio_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
+    filepath = os.path.join(PHOTO_DIR, filename)
+    
+    with open(filepath, "wb") as buffer:
+        buffer.write(image_data)
+    
+    photo_url = f"/photos/{filename}"
+    conn.execute("""
+        INSERT INTO portfolio (master_id, photo_url, description)
+        VALUES (?, ?, ?)
+    """, (master["id"], photo_url, description))
+    conn.commit()
+    
+    return {"photo_url": photo_url, "status": "ok"}
+
 # ========== АВАТАР МАСТЕРА ==========
 @app.post("/master/{telegram_id}/upload-avatar")
 async def upload_avatar(telegram_id: str, file: UploadFile = File(...), conn: sqlite3.Connection = Depends(get_db)):
-    """Загрузка аватара мастера на сервер"""
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
@@ -901,7 +905,6 @@ async def upload_avatar(telegram_id: str, file: UploadFile = File(...), conn: sq
 
 @app.get("/master/{telegram_id}/avatar")
 def get_master_avatar(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Получить аватар мастера"""
     master = conn.execute("SELECT avatar FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master or not master["avatar"]:
         return {"avatar_url": None}
@@ -909,7 +912,6 @@ def get_master_avatar(telegram_id: str, conn: sqlite3.Connection = Depends(get_d
 
 @app.get("/photos/{filename}")
 async def get_photo(filename: str):
-    """Получение фото по имени"""
     filepath = os.path.join(PHOTO_DIR, filename)
     if not os.path.exists(filepath):
         raise HTTPException(404, "Photo not found")
@@ -1076,7 +1078,6 @@ def admin_get_stats(conn: sqlite3.Connection = Depends(get_db)):
 
 @app.post("/masters")
 def create_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Создание мастера (для админ-панели)"""
     telegram_id = data.get("telegram_id")
     name = data.get("name", "Новый мастер")
     lat = data.get("lat", 55.751244)
@@ -1099,7 +1100,6 @@ def create_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
 
 @app.patch("/masters/{master_id}")
 def update_master_admin(master_id: int, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Обновление мастера (для назначения Telegram ID)"""
     updates = []
     params = []
     
@@ -1122,7 +1122,6 @@ def update_master_admin(master_id: int, data: dict, conn: sqlite3.Connection = D
 
 @app.delete("/masters/{master_id}")
 def delete_master_admin(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    """Удаление мастера"""
     conn.execute("DELETE FROM services WHERE master_id = ?", (master_id,))
     conn.execute("DELETE FROM bookings WHERE master_id = ?", (master_id,))
     conn.execute("DELETE FROM days_off WHERE master_id = ?", (master_id,))
@@ -1138,7 +1137,6 @@ def delete_master_admin(master_id: int, conn: sqlite3.Connection = Depends(get_d
 
 @app.post("/promocodes")
 def create_promocode(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Создание промокода (для админ-панели)"""
     code = data.get("code", "").upper()
     discount_percent = data.get("discount_percent")
     expires_at = data.get("expires_at")
@@ -1157,13 +1155,11 @@ def create_promocode(data: dict, conn: sqlite3.Connection = Depends(get_db)):
 
 @app.get("/promocodes")
 def get_promocodes(conn: sqlite3.Connection = Depends(get_db)):
-    """Список промокодов"""
     promos = conn.execute("SELECT * FROM promocodes ORDER BY created_at DESC").fetchall()
     return [dict(p) for p in promos]
 
 @app.get("/client/profile/{telegram_id}")
 def get_client_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Профиль клиента"""
     bookings = conn.execute("""
         SELECT COUNT(*) as total, 
                SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) as confirmed,
@@ -1200,12 +1196,10 @@ def get_client_profile(telegram_id: str, conn: sqlite3.Connection = Depends(get_
 
 @app.get("/api/reminder")
 def test_reminder_endpoint():
-    """Тестовый эндпоинт для напоминаний"""
     return {"status": "ok", "message": "Reminder endpoint works"}
 
 @app.post("/api/reminder")
 async def send_reminder_api(data: dict):
-    """API для отправки напоминаний"""
     user_id = data.get("user_id")
     hours_before = data.get("hours_before")
     message = data.get("message")
@@ -1219,7 +1213,6 @@ async def send_reminder_api(data: dict):
 
 @app.post("/api/waitlist/add")
 def add_waitlist_api(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """API для добавления в лист ожидания"""
     user_id = data.get("user_id")
     service = data.get("service")
     master_id = data.get("master_id")
@@ -1234,7 +1227,6 @@ def add_waitlist_api(data: dict, conn: sqlite3.Connection = Depends(get_db)):
 
 @app.post("/api/review")
 def add_review_api(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """API для добавления отзыва"""
     user_id = data.get("user_id")
     master_id = data.get("master_id")
     rating = data.get("rating")
@@ -1257,7 +1249,6 @@ def add_review_api(data: dict, conn: sqlite3.Connection = Depends(get_db)):
 
 @app.post("/api/repeat/trigger")
 async def repeat_trigger_api(data: dict):
-    """API для триггера 'Пора повторить'"""
     user_id = data.get("user_id")
     
     msg = "💅 *Пора повторить процедуру!* 💅\n\nВы делали маникюр 3 недели назад. Время обновить покрытие! Запишитесь прямо сейчас! 🌸"
