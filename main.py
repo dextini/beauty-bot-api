@@ -114,6 +114,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
+    # Таблица мастеров (IF NOT EXISTS - не трогает существующие данные)
     c.execute("""CREATE TABLE IF NOT EXISTS masters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT DEFAULT '',
@@ -260,6 +261,7 @@ def init_db():
         FOREIGN KEY (service_id) REFERENCES services(id)
     )""")
     
+    # Добавляем недостающие колонки (без удаления данных)
     for col in ['reminder_24h_sent', 'reminder_1h_sent', 'reminder_sent']:
         try:
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col} INTEGER DEFAULT 0")
@@ -270,8 +272,11 @@ def init_db():
             c.execute(f"ALTER TABLE masters ADD COLUMN {col} TEXT")
         except: pass
     
-    c.execute("SELECT COUNT(*) FROM masters WHERE telegram_id = '868528632'")
-    if c.fetchone()[0] == 0:
+    # ТОЛЬКО ЕСЛИ НЕТ НИ ОДНОГО МАСТЕРА - добавляем тестового
+    c.execute("SELECT COUNT(*) FROM masters")
+    count = c.fetchone()[0]
+    if count == 0:
+        logger.info("🔄 БД пуста, добавляем тестового мастера...")
         c.execute("""INSERT INTO masters (name, address, lat, lon, phone, instagram, telegram_id, icon, work_start, work_end, bot_token, description) 
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                   ("Алина Козлова", "ул. Ленина, 12", 47.222078, 39.720358, "+79001234567", "@alina_nails", "868528632", "💅", "09:00", "20:00", MASTER_BOT_TOKEN, "Мастер маникюра с 5-летним опытом"))
@@ -280,6 +285,9 @@ def init_db():
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Маникюр классический", 1200, 60))
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Маникюр с покрытием гель-лак", 2000, 90))
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Педикюр", 2500, 120))
+        logger.info("✅ Тестовый мастер добавлен")
+    else:
+        logger.info(f"✅ БД уже содержит {count} мастеров, ничего не удаляем")
     
     conn.commit()
     conn.close()
@@ -849,13 +857,13 @@ def delete_portfolio_photo(telegram_id: str, photo_id: int, conn: sqlite3.Connec
     conn.commit()
     return {"status": "ok"}
 
-# ========== БАЗОВЫЙ ЭНДПОИНТ ДЛЯ ЗАГРУЗКИ ФОТО (ОБХОД CORS) ==========
+# ========== ЗАГРУЗКА ФОТО BASE64 (ОБХОД CORS) ==========
 @app.post("/master/{telegram_id}/portfolio-base64")
 async def add_portfolio_base64(telegram_id: str, data: dict, conn: sqlite3.Connection = Depends(get_db)):
     """Загрузка фото в портфолио через Base64 (обход CORS)"""
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
-        raise HTTPException(404, "Master not found")
+        raise HTTPException(404, f"Master with telegram_id={telegram_id} not found")
     
     import base64 as b64
     photo_base64 = data.get("photo_base64")
@@ -865,23 +873,27 @@ async def add_portfolio_base64(telegram_id: str, data: dict, conn: sqlite3.Conne
     if not photo_base64:
         raise HTTPException(400, "photo_base64 required")
     
-    image_data = b64.b64decode(photo_base64)
-    
-    ext = filename.split(".")[-1] if "." in filename else "jpg"
-    filename = f"portfolio_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
-    filepath = os.path.join(PHOTO_DIR, filename)
-    
-    with open(filepath, "wb") as buffer:
-        buffer.write(image_data)
-    
-    photo_url = f"/photos/{filename}"
-    conn.execute("""
-        INSERT INTO portfolio (master_id, photo_url, description)
-        VALUES (?, ?, ?)
-    """, (master["id"], photo_url, description))
-    conn.commit()
-    
-    return {"photo_url": photo_url, "status": "ok"}
+    try:
+        image_data = b64.b64decode(photo_base64)
+        
+        ext = filename.split(".")[-1] if "." in filename else "jpg"
+        filename = f"portfolio_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
+        filepath = os.path.join(PHOTO_DIR, filename)
+        
+        with open(filepath, "wb") as buffer:
+            buffer.write(image_data)
+        
+        photo_url = f"/photos/{filename}"
+        conn.execute("""
+            INSERT INTO portfolio (master_id, photo_url, description)
+            VALUES (?, ?, ?)
+        """, (master["id"], photo_url, description))
+        conn.commit()
+        
+        return {"photo_url": photo_url, "status": "ok"}
+    except Exception as e:
+        logger.error(f"Ошибка сохранения фото: {e}")
+        raise HTTPException(500, str(e))
 
 # ========== АВАТАР МАСТЕРА ==========
 @app.post("/master/{telegram_id}/upload-avatar")
