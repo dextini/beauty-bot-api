@@ -849,13 +849,17 @@ def delete_portfolio_photo(telegram_id: str, photo_id: int, conn: sqlite3.Connec
     conn.commit()
     return {"status": "ok"}
 
-# ========== БАЗОВЫЙ ЭНДПОИНТ ДЛЯ ЗАГРУЗКИ ФОТО (ОБХОД CORS) ==========
+# ========== ⭐ ОСНОВНОЙ ЭНДПОИНТ ДЛЯ ЗАГРУЗКИ ФОТО (РАБОТАЕТ) ==========
 @app.post("/master/{telegram_id}/portfolio-base64")
 async def add_portfolio_base64(telegram_id: str, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Загрузка фото в портфолио через Base64 (обход CORS)"""
+    """Загрузка фото в портфолио через Base64"""
+    print(f"✅ Запрос получен! telegram_id={telegram_id}")
+    print(f"✅ Данные: {data.keys() if data else 'no data'}")
+    
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
-        raise HTTPException(404, "Master not found")
+        print(f"❌ Мастер с telegram_id={telegram_id} не найден")
+        raise HTTPException(404, f"Master with telegram_id={telegram_id} not found")
     
     import base64 as b64
     photo_base64 = data.get("photo_base64")
@@ -863,25 +867,31 @@ async def add_portfolio_base64(telegram_id: str, data: dict, conn: sqlite3.Conne
     description = data.get("description", "")
     
     if not photo_base64:
+        print(f"❌ Нет photo_base64 в данных")
         raise HTTPException(400, "photo_base64 required")
     
-    image_data = b64.b64decode(photo_base64)
-    
-    ext = filename.split(".")[-1] if "." in filename else "jpg"
-    filename = f"portfolio_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
-    filepath = os.path.join(PHOTO_DIR, filename)
-    
-    with open(filepath, "wb") as buffer:
-        buffer.write(image_data)
-    
-    photo_url = f"/photos/{filename}"
-    conn.execute("""
-        INSERT INTO portfolio (master_id, photo_url, description)
-        VALUES (?, ?, ?)
-    """, (master["id"], photo_url, description))
-    conn.commit()
-    
-    return {"photo_url": photo_url, "status": "ok"}
+    try:
+        image_data = b64.b64decode(photo_base64)
+        
+        ext = filename.split(".")[-1] if "." in filename else "jpg"
+        filename = f"portfolio_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
+        filepath = os.path.join(PHOTO_DIR, filename)
+        
+        with open(filepath, "wb") as buffer:
+            buffer.write(image_data)
+        
+        photo_url = f"/photos/{filename}"
+        conn.execute("""
+            INSERT INTO portfolio (master_id, photo_url, description)
+            VALUES (?, ?, ?)
+        """, (master["id"], photo_url, description))
+        conn.commit()
+        
+        print(f"✅ Фото сохранено: {photo_url}")
+        return {"photo_url": photo_url, "status": "ok"}
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        raise HTTPException(500, str(e))
 
 # ========== АВАТАР МАСТЕРА ==========
 @app.post("/master/{telegram_id}/upload-avatar")
