@@ -143,10 +143,12 @@ async def startup():
     try:
         db = await asyncpg.connect(DATABASE_URL)
         await init_db()
+        print("✅ Database connected and initialized")
     except Exception as e:
-        print(f"Database connection error: {e}")
+        print(f"❌ Database connection error: {e}")
 
 async def init_db():
+    # ========== СОЗДАНИЕ ТАБЛИЦ ==========
     await db.execute("""
         CREATE TABLE IF NOT EXISTS masters (
             id SERIAL PRIMARY KEY,
@@ -339,6 +341,128 @@ async def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    
+    # ========== АВТОВОССТАНОВЛЕНИЕ МАСТЕРОВ ==========
+    count = await db.fetchval("SELECT COUNT(*) FROM masters")
+    if count == 0:
+        print("🔄 Восстанавливаем тестовых мастеров...")
+        
+        # 1. Алина Козлова (Маникюр)
+        await db.execute("""
+            INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
+            VALUES (777000, 'Алина Козлова', 47.222078, 39.720358, 
+                   '🌸 Мастер маникюра с 5-летним опытом. Делаю классику, гель-лак, дизайн. Использую только премиальные материалы CND, OPI.',
+                   '09:00', '21:00', '💅', 4.9, 128)
+        """)
+        
+        # 2. Елена Соколова (Брови/Ресницы)
+        await db.execute("""
+            INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
+            VALUES (777001, 'Елена Соколова', 47.225000, 39.725000,
+                   '👑 Топ-мастер по бровам и ресницам. Стаж 7 лет. Делаю брови мечты и ресницы как у принцессы.',
+                   '10:00', '20:00', '✏️', 4.95, 256)
+        """)
+        
+        # 3. Дмитрий Волков (Мужские стрижки)
+        await db.execute("""
+            INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
+            VALUES (777002, 'Дмитрий Волков', 47.218000, 39.718000,
+                   '💈 Мужской мастер. Стрижки, бороды, укладки. Работаю с разными типами волос.',
+                   '11:00', '22:00', '✂️', 4.85, 89)
+        """)
+        
+        # 4. Анна Морозова (Косметолог)
+        await db.execute("""
+            INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
+            VALUES (777003, 'Анна Морозова', 47.230000, 39.730000,
+                   '💆‍♀️ Косметолог. Чистки лица, пилинги, массажи. Помогу вашей коже сиять!',
+                   '09:30', '19:30', '🧴', 4.92, 312)
+        """)
+        
+        # 5. Виктория Лебедева (Парикмахер)
+        await db.execute("""
+            INSERT INTO masters (telegram_id, name, lat, lon, description, work_start, work_end, icon, rating, reviews_count)
+            VALUES (777004, 'Виктория Лебедева', 47.215000, 39.715000,
+                   '✂️ Топ-стилист. Женские и мужские стрижки, окрашивание, мелирование, сложное окрашивание.',
+                   '09:00', '20:00', '✂️', 4.98, 567)
+        """)
+        
+        # Услуги Алины (master_id=1)
+        await db.execute("""
+            INSERT INTO services (master_id, name, price, duration_min) VALUES
+            (1, 'Маникюр классический', 1200, 60),
+            (1, 'Маникюр с покрытием гель-лак', 2000, 90),
+            (1, 'Педикюр', 2500, 90),
+            (1, 'SPA-уход за руками', 1500, 60),
+            (1, 'Дизайн ногтей', 800, 45)
+        """)
+        
+        # Услуги Елены (master_id=2)
+        await db.execute("""
+            INSERT INTO services (master_id, name, price, duration_min) VALUES
+            (2, 'Коррекция бровей', 800, 40),
+            (2, 'Окрашивание бровей', 1000, 50),
+            (2, 'Ламинирование бровей', 2000, 70),
+            (2, 'Ламинирование ресниц', 2500, 90),
+            (2, 'Наращивание ресниц 2D', 3000, 120),
+            (2, 'Ботокс для ресниц', 1500, 60)
+        """)
+        
+        # Услуги Дмитрия (master_id=3)
+        await db.execute("""
+            INSERT INTO services (master_id, name, price, duration_min) VALUES
+            (3, 'Мужская стрижка', 1200, 45),
+            (3, 'Стрижка + борода', 1800, 60),
+            (3, 'Моделирование бороды', 800, 30),
+            (3, 'Укладка', 600, 25),
+            (3, 'Камуфляж седины', 500, 20)
+        """)
+        
+        # Услуги Анны (master_id=4)
+        await db.execute("""
+            INSERT INTO services (master_id, name, price, duration_min) VALUES
+            (4, 'Чистка лица ультразвуковая', 2500, 60),
+            (4, 'Чистка лица комбинированная', 3500, 90),
+            (4, 'Пилинг лица', 2000, 45),
+            (4, 'Массаж лица', 1800, 50),
+            (4, 'Уход за лицом (увлажнение)', 2200, 60)
+        """)
+        
+        # Услуги Виктории (master_id=5)
+        await db.execute("""
+            INSERT INTO services (master_id, name, price, duration_min) VALUES
+            (5, 'Женская стрижка', 2000, 60),
+            (5, 'Окрашивание', 3500, 120),
+            (5, 'Мелирование', 4000, 150),
+            (5, 'Тонирование', 2500, 90),
+            (5, 'Укладка', 1500, 45)
+        """)
+        
+        # Добавляем портфолио "до/после"
+        await db.execute("""
+            INSERT INTO master_before_after (master_id, before_photo, after_photo, description) VALUES
+            (1, 'https://images.unsplash.com/photo-1604654894610-df63bc536371?w=400', 'https://images.unsplash.com/photo-1604654894610-df63bc536371?w=400', 'Классический маникюр до/после'),
+            (2, 'https://images.unsplash.com/photo-1512290923902-8a9f81dc236c?w=400', 'https://images.unsplash.com/photo-1512290923902-8a9f81dc236c?w=400', 'Коррекция бровей'),
+            (3, 'https://images.unsplash.com/photo-1621605815971-fbc98d665033?w=400', 'https://images.unsplash.com/photo-1621605815971-fbc98d665033?w=400', 'Мужская стрижка'),
+            (4, 'https://images.unsplash.com/photo-1570172619644-d2bcf13bae3c?w=400', 'https://images.unsplash.com/photo-1570172619644-d2bcf13bae3c?w=400', 'Чистка лица'),
+            (5, 'https://images.unsplash.com/photo-1562322140-8baeececf3df?w=400', 'https://images.unsplash.com/photo-1562322140-8baeececf3df?w=400', 'Стрижка и окрашивание')
+        """)
+        
+        # Добавляем промокоды
+        await db.execute("""
+            INSERT INTO promocodes (code, discount_percent, expires_at, max_uses) VALUES
+            ('WELCOME10', 10, NOW() + INTERVAL '30 days', 100),
+            ('BEAUTY20', 20, NOW() + INTERVAL '15 days', 50),
+            ('FIRSTTIME', 15, NOW() + INTERVAL '60 days', 200),
+            ('HAPPYHOUR', 25, NOW() + INTERVAL '7 days', 30)
+        """)
+        
+        print(f"✅ Восстановлено мастеров: {await db.fetchval('SELECT COUNT(*) FROM masters')}")
+        print(f"✅ Восстановлено услуг: {await db.fetchval('SELECT COUNT(*) FROM services')}")
+        print(f"✅ Восстановлено портфолио: {await db.fetchval('SELECT COUNT(*) FROM master_before_after')}")
+        print(f"✅ Восстановлено промокодов: {await db.fetchval('SELECT COUNT(*) FROM promocodes')}")
+    else:
+        print(f"✅ Мастера уже есть в БД: {count} шт.")
 
 # ========== МАСТЕРА ==========
 @app.get("/masters")
@@ -576,19 +700,17 @@ async def create_booking(booking: BookingCreate):
     """, booking.master_id, booking.service_id, booking.client_name, booking.client_telegram_id,
         booking.client_phone, booking.date, booking.time, service["price"], deposit_amount)
     
-    # Создаём уведомление
     await db.execute("""
         INSERT INTO notifications (user_id, type, title, message)
-        VALUES ($1, 'booking_created', '✅ Новая запись', 'Вы записаны на $2 $3 в $4')
-    """, int(booking.client_telegram_id), service["name"], booking.date, booking.time)
+        VALUES ($1, 'booking_created', '✅ Новая запись', 'Вы записаны на услугу в $2 $3')
+    """, int(booking.client_telegram_id), booking.date, booking.time)
     
-    # Отправляем напоминание мастеру
     master = await db.fetchrow("SELECT telegram_id FROM masters WHERE id = $1", booking.master_id)
     if master and master["telegram_id"]:
         await db.execute("""
             INSERT INTO notifications (user_id, type, title, message)
-            VALUES ($1, 'new_booking', '📅 Новая запись!', 'Клиент $2 записался на $3 $4 в $5')
-        """, master["telegram_id"], booking.client_name, service["name"], booking.date, booking.time)
+            VALUES ($1, 'new_booking', '📅 Новая запись!', 'Клиент $2 записался на $3 в $4')
+        """, master["telegram_id"], booking.client_name, booking.date, booking.time)
     
     return {"booking_id": booking_id, "status": "created", "deposit_amount": deposit_amount}
 
@@ -828,7 +950,6 @@ async def send_reminder(data: ReminderRequest):
         VALUES ($1, 'reminder', $2, $3)
     """, data.user_id, f"Напоминание за {data.hours_before}ч", data.message)
     
-    # Здесь будет вызов Telegram бота
     print(f"[REMINDER] To {data.user_id} ({data.hours_before}h): {data.message}")
     return {"status": "sent"}
 
@@ -1244,7 +1365,6 @@ async def create_payment(data: PaymentCreate):
         RETURNING id
     """, data.booking_id, data.user_id, data.amount, data.payment_method)
     
-    # Здесь будет интеграция с платёжной системой (Stripe, YooKassa, Telegram Stars)
     return {"payment_id": payment_id, "payment_url": f"https://t.me/beauty_bot/pay_{payment_id}"}
 
 @app.get("/payments/{payment_id}/status")
