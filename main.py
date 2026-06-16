@@ -642,7 +642,7 @@ async def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db
     
     return {"status": "ok", "message": "Payment confirmed"}
 
-# ========== ВЕБХУК ОТ ЮKASSA (ИСПРАВЛЕННЫЙ) ==========
+# ========== ВЕБХУК ОТ ЮKASSA ==========
 @app.post("/ykassa-webhook")
 async def ykassa_webhook(notification: dict, conn: sqlite3.Connection = Depends(get_db)):
     logger.info(f"📨 Webhook received: {notification.get('type')}")
@@ -910,7 +910,7 @@ def delete_portfolio_photo(telegram_id: str, photo_id: int, conn: sqlite3.Connec
     conn.commit()
     return {"status": "ok"}
 
-# ========== ЗАГРУЗКА ФОТО BASE64 (ОБХОД CORS) ==========
+# ========== ЗАГРУЗКА ФОТО BASE64 ==========
 @app.post("/master/{telegram_id}/portfolio-base64")
 async def add_portfolio_base64(telegram_id: str, data: dict, conn: sqlite3.Connection = Depends(get_db)):
     """Загрузка фото в портфолио через Base64 (обход CORS)"""
@@ -1323,13 +1323,25 @@ async def repeat_trigger_api(data: dict):
     
     return {"status": "triggered"}
 
-# ========== ТЕСТОВЫЙ ЭНДПОИНТ (принудительное подтверждение) ==========
+# ========== ⭐ НОВЫЕ ЭНДПОИНТЫ ДЛЯ ПРОВЕРКИ ОПЛАТЫ ==========
+
+@app.get("/bookings/{booking_id}")
+def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    """Получить информацию о записи"""
+    booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
+    if not booking:
+        raise HTTPException(404, "Booking not found")
+    return dict(booking)
+
 @app.get("/test-payment/{booking_id}")
 async def test_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
     """Принудительное подтверждение записи (для теста)"""
     booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
     if not booking:
         raise HTTPException(404, "Booking not found")
+    
+    if booking["status"] == "confirmed":
+        return {"status": "already_confirmed", "booking_id": booking_id}
     
     confirm_booking(booking_id, conn)
     
