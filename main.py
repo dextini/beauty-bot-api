@@ -114,6 +114,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
+    # Таблица мастеров
     c.execute("""CREATE TABLE IF NOT EXISTS masters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT DEFAULT '',
@@ -132,6 +133,7 @@ def init_db():
         avatar TEXT
     )""")
     
+    # Таблица услуг
     c.execute("""CREATE TABLE IF NOT EXISTS services (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -140,6 +142,7 @@ def init_db():
         duration_min INTEGER
     )""")
     
+    # Таблица записей
     c.execute("""CREATE TABLE IF NOT EXISTS bookings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -163,6 +166,7 @@ def init_db():
         sms_sent INTEGER DEFAULT 0
     )""")
     
+    # Таблица выходных дней
     c.execute("""CREATE TABLE IF NOT EXISTS days_off (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -170,6 +174,7 @@ def init_db():
         UNIQUE(master_id, date)
     )""")
     
+    # Таблица чатов
     c.execute("""CREATE TABLE IF NOT EXISTS chats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         booking_id INTEGER UNIQUE,
@@ -179,6 +184,7 @@ def init_db():
         token TEXT UNIQUE
     )""")
     
+    # Таблица сообщений чата
     c.execute("""CREATE TABLE IF NOT EXISTS chat_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         booking_id INTEGER,
@@ -189,12 +195,14 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
+    # Таблица пользователей
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         telegram_id TEXT UNIQUE,
         registered_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
+    # Таблица быстрых ответов
     c.execute("""CREATE TABLE IF NOT EXISTS quick_replies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -202,6 +210,7 @@ def init_db():
         message TEXT
     )""")
     
+    # Таблица портфолио
     c.execute("""CREATE TABLE IF NOT EXISTS portfolio (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -210,6 +219,7 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
+    # Таблица портфолио "До/После"
     c.execute("""CREATE TABLE IF NOT EXISTS master_before_after (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -219,6 +229,7 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
+    # Таблица избранного
     c.execute("""CREATE TABLE IF NOT EXISTS favorites (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         client_telegram_id TEXT,
@@ -226,6 +237,7 @@ def init_db():
         UNIQUE(client_telegram_id, master_id)
     )""")
     
+    # Таблица чёрного списка
     c.execute("""CREATE TABLE IF NOT EXISTS blacklist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -234,6 +246,7 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
+    # Таблица промокодов
     c.execute("""CREATE TABLE IF NOT EXISTS promocodes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT UNIQUE,
@@ -244,6 +257,7 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
+    # Таблица отзывов
     c.execute("""CREATE TABLE IF NOT EXISTS reviews (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -256,6 +270,7 @@ def init_db():
         FOREIGN KEY (booking_id) REFERENCES bookings(id)
     )""")
     
+    # Таблица листа ожидания
     c.execute("""CREATE TABLE IF NOT EXISTS waitlist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -270,6 +285,7 @@ def init_db():
         FOREIGN KEY (service_id) REFERENCES services(id)
     )""")
     
+    # Добавляем недостающие колонки
     for col in ['reminder_24h_sent', 'reminder_1h_sent', 'reminder_sent']:
         try:
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col} INTEGER DEFAULT 0")
@@ -285,6 +301,7 @@ def init_db():
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col} TEXT DEFAULT 'pending'")
         except: pass
     
+    # Добавляем тестового мастера если БД пуста
     c.execute("SELECT COUNT(*) FROM masters")
     count = c.fetchone()[0]
     if count == 0:
@@ -764,7 +781,8 @@ def check_waitlist(master_id: int, service_id: int, date: str, conn: sqlite3.Con
     waitlist = conn.execute("""
         SELECT * FROM waitlist 
         WHERE master_id = ? AND service_id = ? AND notified = 0 
-        ORDER BY created_at ASC LIMIT 1    """, (master_id, service_id)).fetchone()
+        ORDER BY created_at ASC LIMIT 1
+    """, (master_id, service_id)).fetchone()
     
     if waitlist:
         msg = f"🌸 *Слот освободился!* 🌸\n\nНа {date} появилось свободное время! Спешите записаться!"
@@ -900,9 +918,49 @@ def delete_quick_reply(telegram_id: str, reply_id: int, conn: sqlite3.Connection
     conn.commit()
     return {"status": "ok"}
 
-# ========== ⭐ ПОРТФОЛИО (ПОЛНОСТЬЮ РАБОЧИЙ БЛОК) ==========
+# ========== ⭐ АВАТАР И ПОРТФОЛИО (ИСПРАВЛЕННЫЙ БЛОК) ==========
 
-# 1. ПОЛУЧЕНИЕ СПИСКА ПОРТФОЛИО (GET)
+@app.post("/master/{telegram_id}/upload-avatar")
+async def upload_avatar(
+    telegram_id: str,
+    file: UploadFile = File(...),
+    conn: sqlite3.Connection = Depends(get_db)
+):
+    """Загрузка аватара мастера"""
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    
+    if not file.content_type.startswith('image/'):
+        raise HTTPException(400, "File must be an image")
+    
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+    if size > 5 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 5MB)")
+    
+    ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
+    filename = f"avatar_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
+    filepath = os.path.join(PHOTO_DIR, filename)
+    
+    with open(filepath, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    avatar_url = f"/photos/{filename}"
+    conn.execute("UPDATE masters SET avatar = ? WHERE id = ?", (avatar_url, master["id"]))
+    conn.commit()
+    
+    return {"avatar_url": avatar_url, "status": "ok"}
+
+@app.get("/master/{telegram_id}/avatar")
+def get_avatar(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    """Получить ссылку на аватар мастера"""
+    master = conn.execute("SELECT avatar FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not master or not master["avatar"]:
+        return {"avatar_url": None}
+    return {"avatar_url": master["avatar"]}
+
 @app.get("/master/{telegram_id}/portfolio")
 def get_portfolio(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     """Получить все фото портфолио мастера"""
@@ -919,7 +977,6 @@ def get_portfolio(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     
     return [dict(r) for r in rows]
 
-# 2. ЗАГРУЗКА ПОРТФОЛИО (POST)
 @app.post("/master/{telegram_id}/upload-portfolio")
 async def upload_portfolio(
     telegram_id: str,
@@ -957,7 +1014,6 @@ async def upload_portfolio(
     
     return {"photo_url": photo_url, "status": "ok"}
 
-# 3. УДАЛЕНИЕ ФОТО ИЗ ПОРТФОЛИО (DELETE)
 @app.delete("/master/{telegram_id}/portfolio/{photo_id}")
 def delete_portfolio_photo(
     telegram_id: str,
@@ -988,52 +1044,8 @@ def delete_portfolio_photo(
     
     return {"status": "ok"}
 
-# ========== ⭐ ЗАГРУЗКА АВАТАРА ==========
-@app.post("/master/{telegram_id}/upload-avatar")
-async def upload_avatar(
-    telegram_id: str,
-    file: UploadFile = File(...),
-    conn: sqlite3.Connection = Depends(get_db)
-):
-    """Загрузка аватара мастера"""
-    master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
-    if not master:
-        raise HTTPException(404, "Master not found")
-    
-    if not file.content_type.startswith('image/'):
-        raise HTTPException(400, "File must be an image")
-    
-    file.file.seek(0, 2)
-    size = file.file.tell()
-    file.file.seek(0)
-    if size > 5 * 1024 * 1024:
-        raise HTTPException(400, "File too large (max 5MB)")
-    
-    ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
-    filename = f"avatar_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
-    filepath = os.path.join(PHOTO_DIR, filename)
-    
-    with open(filepath, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    avatar_url = f"/photos/{filename}"
-    conn.execute("UPDATE masters SET avatar = ? WHERE id = ?", (avatar_url, master["id"]))
-    conn.commit()
-    
-    return {"avatar_url": avatar_url, "status": "ok"}
-
-# ========== ПОЛУЧЕНИЕ АВАТАРА ==========
-@app.get("/master/{telegram_id}/avatar")
-def get_avatar(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Получить ссылку на аватар мастера"""
-    master = conn.execute("SELECT avatar FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
-    if not master or not master["avatar"]:
-        return {"avatar_url": None}
-    return {"avatar_url": master["avatar"]}
-
 # ========== ⭐ ПОРТФОЛИО "ДО/ПОСЛЕ" ==========
 
-# 1. ПОЛУЧЕНИЕ СПИСКА "ДО/ПОСЛЕ" (GET)
 @app.get("/masters/{master_id}/before-after")
 def get_before_after(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     rows = conn.execute("""
@@ -1044,7 +1056,6 @@ def get_before_after(master_id: int, conn: sqlite3.Connection = Depends(get_db))
     """, (master_id,)).fetchall()
     return [dict(r) for r in rows]
 
-# 2. ДОБАВЛЕНИЕ ПАРЫ "ДО/ПОСЛЕ" (POST)
 @app.post("/master/{telegram_id}/before-after")
 async def add_before_after(telegram_id: str, data: dict, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
@@ -1058,7 +1069,6 @@ async def add_before_after(telegram_id: str, data: dict, conn: sqlite3.Connectio
     conn.commit()
     return {"status": "ok"}
 
-# 3. УДАЛЕНИЕ ПАРЫ "ДО/ПОСЛЕ" (DELETE)
 @app.delete("/master/{telegram_id}/before-after/{item_id}")
 def delete_before_after(telegram_id: str, item_id: int, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
@@ -1074,7 +1084,6 @@ def delete_before_after(telegram_id: str, item_id: int, conn: sqlite3.Connection
 
 # ========== ⭐ ДНИ ОТДЫХА ==========
 
-# 1. ПОЛУЧЕНИЕ ВЫХОДНЫХ (GET)
 @app.get("/masters/{master_id}/days_off")
 def get_days_off(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     rows = conn.execute("""
@@ -1084,7 +1093,6 @@ def get_days_off(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     """, (master_id,)).fetchall()
     return [dict(r) for r in rows]
 
-# 2. ДОБАВЛЕНИЕ ВЫХОДНОГО (POST)
 @app.post("/masters/{master_id}/days_off")
 def add_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
     conn.execute(
@@ -1094,7 +1102,6 @@ def add_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends(ge
     conn.commit()
     return {"status": "ok"}
 
-# 3. УДАЛЕНИЕ ВЫХОДНОГО (DELETE)
 @app.delete("/masters/{master_id}/days_off/{date}")
 def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
     conn.execute(
