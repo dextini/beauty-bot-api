@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Request, Form, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles  # ✅ ДОБАВЛЕНО
 from pydantic import BaseModel
 from typing import Optional, List
 import sqlite3
@@ -32,6 +33,9 @@ MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURS
 DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
 PHOTO_DIR = os.path.join(os.getcwd(), "data", "photos")
 os.makedirs(PHOTO_DIR, exist_ok=True)
+
+# ✅ МОНТИРУЕМ ПАПКУ PHOTOS ДЛЯ СТАТИЧЕСКОЙ ОТДАЧИ
+app.mount("/photos", StaticFiles(directory=PHOTO_DIR), name="photos")
 
 # === CORS ===
 app.add_middleware(
@@ -880,13 +884,12 @@ def delete_quick_reply(telegram_id: str, reply_id: int, conn: sqlite3.Connection
     conn.commit()
     return {"status": "ok"}
 
-# ========== ⭐ АВАТАР (ИСПРАВЛЕН — НОВОЕ ПОДКЛЮЧЕНИЕ К БД) ==========
+# ========== АВАТАР ==========
 @app.post("/master/{telegram_id}/upload-avatar")
 async def upload_avatar(
     telegram_id: str,
     file: UploadFile = File(...)
 ):
-    """Загрузка аватара мастера (создаёт новое подключение к БД)"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     
@@ -924,13 +927,12 @@ async def upload_avatar(
 
 @app.get("/master/{telegram_id}/avatar")
 def get_avatar(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Получить ссылку на аватар мастера"""
     master = conn.execute("SELECT avatar FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master or not master["avatar"]:
         return {"avatar_url": None}
     return {"avatar_url": master["avatar"]}
 
-# ========== ⭐ ПОРТФОЛИО (ИСПРАВЛЕН — НОВОЕ ПОДКЛЮЧЕНИЕ К БД) ==========
+# ========== ПОРТФОЛИО ==========
 @app.get("/master/{telegram_id}/portfolio")
 def get_portfolio(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
@@ -952,7 +954,6 @@ async def upload_portfolio(
     file: UploadFile = File(...),
     description: str = Form("")
 ):
-    """Загрузка фото в портфолио (создаёт новое подключение к БД)"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     
@@ -1020,7 +1021,7 @@ def delete_portfolio_photo(
     
     return {"status": "ok"}
 
-# ========== ⭐ ПОРТФОЛИО "ДО/ПОСЛЕ" ==========
+# ========== ПОРТФОЛИО "ДО/ПОСЛЕ" ==========
 @app.get("/masters/{master_id}/before-after")
 def get_before_after(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     rows = conn.execute("""
@@ -1033,7 +1034,6 @@ def get_before_after(master_id: int, conn: sqlite3.Connection = Depends(get_db))
 
 @app.post("/master/{telegram_id}/before-after")
 async def add_before_after(telegram_id: str, data: dict):
-    """Добавить пару до/после (создаёт новое подключение к БД)"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     
@@ -1067,10 +1067,9 @@ def delete_before_after(telegram_id: str, item_id: int, conn: sqlite3.Connection
     conn.commit()
     return {"status": "ok"}
 
-# ========== ⭐ ДНИ ОТДЫХА (ИСПРАВЛЕНЫ) ==========
+# ========== ДНИ ОТДЫХА ==========
 @app.get("/masters/{master_id}/days_off")
 def get_days_off(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    """Получить выходные дни мастера"""
     try:
         rows = conn.execute("""
             SELECT date FROM days_off
@@ -1084,7 +1083,6 @@ def get_days_off(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
 
 @app.post("/masters/{master_id}/days_off")
 def add_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Добавить выходной день"""
     try:
         conn.execute(
             "INSERT OR IGNORE INTO days_off (master_id, date) VALUES (?, ?)",
@@ -1098,7 +1096,6 @@ def add_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends(ge
 
 @app.delete("/masters/{master_id}/days_off/{date}")
 def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Удалить выходной день"""
     try:
         conn.execute(
             "DELETE FROM days_off WHERE master_id = ? AND date = ?",
@@ -1255,7 +1252,7 @@ def admin_get_stats(conn: sqlite3.Connection = Depends(get_db)):
     revenue = conn.execute("SELECT SUM(price) FROM bookings b JOIN services s ON b.service_id=s.id WHERE b.status='confirmed'").fetchone()[0] or 0
     return {"masters": masters, "total_bookings": bookings, "confirmed": confirmed, "pending": pending, "reviews": reviews, "revenue": revenue}
 
-# ========== ДОБАВЛЕННЫЕ ЭНДПОИНТЫ ДЛЯ АДМИНКИ ==========
+# ========== ДОПОЛНИТЕЛЬНЫЕ ЭНДПОИНТЫ ==========
 @app.post("/masters")
 def create_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     telegram_id = data.get("telegram_id")
@@ -1439,7 +1436,6 @@ async def repeat_trigger_api(data: dict):
     
     return {"status": "triggered"}
 
-# ========== НОВЫЕ ЭНДПОИНТЫ ДЛЯ ПРОВЕРКИ ОПЛАТЫ ==========
 @app.get("/bookings/{booking_id}")
 def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
     booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
@@ -1473,6 +1469,15 @@ def health_check():
 @app.get("/")
 def root():
     return {"status": "Beauty Bot API running 🌸", "version": "3.0.0"}
+
+# ========== ЭНДПОИНТ ДЛЯ РУЧНОЙ ОТДАЧИ ФОТО (НА СЛУЧАЙ ЕСЛИ STATICFILES НЕ РАБОТАЕТ) ==========
+@app.get("/photos/{filename}")
+async def get_photo(filename: str):
+    """Ручной эндпоинт для отдачи фото, если StaticFiles по какой-то причине не работает"""
+    file_path = os.path.join(PHOTO_DIR, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    raise HTTPException(404, "Photo not found")
 
 if __name__ == "__main__":
     import uvicorn
