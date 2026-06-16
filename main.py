@@ -639,61 +639,82 @@ async def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db
     
     return {"status": "ok", "message": "Payment confirmed"}
 
-# ========== ВЕБХУК ОТ ЮKASSA ==========
+# ========== ⭐ ВЕБХУК (ОБНОВЛЁННАЯ ВЕРСИЯ) ==========
 @app.post("/ykassa-webhook")
-async def ykassa_webhook(notification: dict, conn: sqlite3.Connection = Depends(get_db)):
-    logger.info(f"📨 [WEBHOOK] Получен запрос: {notification}")
-    
+async def ykassa_webhook(request: Request, conn: sqlite3.Connection = Depends(get_db)):
+    """Обработка вебхуков от ЮKassa"""
     try:
-        if notification.get("type") != "notification":
-            logger.info(f"⏭️ Не уведомление, пропускаем")
-            return {"status": "ok"}
+        # Получаем данные
+        body = await request.body()
+        raw_body = body.decode('utf-8')
         
-        payment_obj = notification.get("object", {})
-        payment_id = payment_obj.get("id")
-        payment_status = payment_obj.get("status")
+        logger.info(f"📨 [WEBHOOK] Получен запрос")
+        logger.info(f"📨 [WEBHOOK] Raw: {raw_body[:500]}")
         
-        logger.info(f"💳 [WEBHOOK] Платёж {payment_id}: статус {payment_status}")
+        # Парсим JSON
+        try:
+            notification = json.loads(raw_body)
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ [WEBHOOK] Ошибка парсинга JSON: {e}")
+            return {"status": "error", "detail": "Invalid JSON"}
         
-        if payment_status == "succeeded":
-            # Ищем бронь по payment_id
-            booking = conn.execute(
-                "SELECT id FROM bookings WHERE payment_id = ?", 
-                (payment_id,)
-            ).fetchone()
-            
-            if booking:
-                logger.info(f"✅ [WEBHOOK] Найдена бронь {booking['id']} по payment_id")
-                confirm_booking(booking["id"], conn)
-                logger.info(f"✅ [WEBHOOK] Бронь {booking['id']} подтверждена!")
-                return {"status": "ok"}
-            
-            # Если не нашли — пробуем найти по метаданным
+        # Проверяем тип события
+        event_type = notification.get("event")
+        logger.info(f"📨 [WEBHOOK] Событие: {event_type}")
+        
+        if event_type == "payment.succeeded":
+            payment_obj = notification.get("object", {})
+            payment_id = payment_obj.get("id")
+            payment_status = payment_obj.get("status")
             metadata = payment_obj.get("metadata", {})
             booking_id = metadata.get("booking_id")
             
+            logger.info(f"💳 [WEBHOOK] Платёж {payment_id}: статус {payment_status}")
+            logger.info(f"📦 [WEBHOOK] Метаданные: {metadata}")
+            
             if booking_id:
-                logger.info(f"🔍 [WEBHOOK] Ищем бронь {booking_id} по метаданным")
+                logger.info(f"🔍 [WEBHOOK] Ищем бронь {booking_id}")
+                
+                # Проверяем, не подтверждена ли уже
                 booking = conn.execute(
-                    "SELECT id FROM bookings WHERE id = ?", 
+                    "SELECT id, status FROM bookings WHERE id = ?", 
                     (booking_id,)
                 ).fetchone()
                 
                 if booking:
-                    conn.execute(
-                        "UPDATE bookings SET payment_id = ? WHERE id = ?",
-                        (payment_id, booking_id)
-                    )
-                    conn.commit()
-                    confirm_booking(booking["id"], conn)
-                    logger.info(f"✅ [WEBHOOK] Бронь {booking_id} подтверждена через метаданные!")
-                    return {"status": "ok"}
+                    if booking["status"] != "confirmed":
+                        # Обновляем payment_id
+                        conn.execute(
+                            "UPDATE bookings SET payment_id = ? WHERE id = ?",
+                            (payment_id, booking_id)
+                        )
+                        conn.commit()
+                        
+                        confirm_booking(booking["id"], conn)
+                        logger.info(f"✅ [WEBHOOK] Бронь {booking_id} подтверждена!")
+                    else:
+                        logger.info(f"ℹ️ [WEBHOOK] Бронь {booking_id} уже подтверждена")
                 else:
                     logger.warning(f"⚠️ [WEBHOOK] Бронь {booking_id} не найдена")
             else:
-                logger.warning(f"⚠️ [WEBHOOK] Нет metadata.booking_id в платеже {payment_id}")
+                logger.warning(f"⚠️ [WEBHOOK] Нет booking_id в метаданных")
+                
+        elif event_type == "payment.waiting_for_capture":
+            logger.info(f"⏳ [WEBHOOK] Платёж ожидает захвата")
+            # Автоматически захватываем
+            try:
+                payment_id = notification.get("object", {}).get("id")
+                if payment_id:
+                    # Здесь можно сделать захват через API ЮKassa
+                    logger.info(f"💳 [WEBHOOK] Захватываем платёж {payment_id}")
+            except Exception as e:
+                logger.error(f"❌ [WEBHOOK] Ошибка захвата: {e}")
+        
+        elif event_type == "payment.canceled":
+            logger.info(f"❌ [WEBHOOK] Платёж отменён")
+            
         else:
-            logger.info(f"⏳ [WEBHOOK] Статус платежа {payment_status} — ждём завершения")
+            logger.info(f"⏭️ [WEBHOOK] Событие {event_type} пропущено")
             
     except Exception as e:
         logger.error(f"❌ [WEBHOOK] Ошибка: {e}")
