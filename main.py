@@ -114,7 +114,6 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Таблица мастеров
     c.execute("""CREATE TABLE IF NOT EXISTS masters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT DEFAULT '',
@@ -262,7 +261,6 @@ def init_db():
         FOREIGN KEY (service_id) REFERENCES services(id)
     )""")
     
-    # Добавляем недостающие колонки (без удаления данных)
     for col in ['reminder_24h_sent', 'reminder_1h_sent', 'reminder_sent']:
         try:
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col} INTEGER DEFAULT 0")
@@ -278,7 +276,6 @@ def init_db():
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col} TEXT DEFAULT 'pending'")
         except: pass
     
-    # ТОЛЬКО ЕСЛИ НЕТ НИ ОДНОГО МАСТЕРА - добавляем тестового
     c.execute("SELECT COUNT(*) FROM masters")
     count = c.fetchone()[0]
     if count == 0:
@@ -407,7 +404,7 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
     except:
         return {"confirmation_url": "https://yandex.ru", "payment_id": f"fallback_{booking_id}"}
 
-# ========== НАПОМИНАНИЯ (ФОНОВЫЕ ЗАДАЧИ) ==========
+# ========== НАПОМИНАНИЯ ==========
 async def send_reminders():
     conn = get_db()
     try:
@@ -616,47 +613,21 @@ async def create_booking(data: BookingIn):
     finally:
         conn.close()
 
-@app.post("/payment-callback")
-async def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    booking_id = data.get("booking_id")
-    payment_id = data.get("payment_id")
-    
-    if not booking_id:
-        return {"status": "error", "message": "booking_id required"}
-    
-    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
-    if not booking:
-        return {"status": "error", "message": "Booking not found"}
-    
-    conn.execute("""
-        UPDATE bookings 
-        SET status = 'confirmed', 
-            payment_status = 'paid',
-            confirmed_at = CURRENT_TIMESTAMP,
-            payment_id = ?
-        WHERE id = ?
-    """, (payment_id, booking_id))
-    conn.commit()
-    
-    confirm_booking(booking_id, conn)
-    
-    return {"status": "ok", "message": "Payment confirmed"}
-
-# ========== ВЕБХУК ОТ ЮKASSA ==========
+# ========== ⭐ ВЕБХУК ОТ ЮKASSA (ДОБАВЛЕНЫ ЛОГИ) ==========
 @app.post("/ykassa-webhook")
 async def ykassa_webhook(notification: dict, conn: sqlite3.Connection = Depends(get_db)):
-    logger.info(f"📨 Webhook received: {notification.get('type')}")
+    logger.info(f"📨 [WEBHOOK] Получен запрос: {notification}")
     
     try:
         if notification.get("type") != "notification":
+            logger.info(f"⏭️ Не уведомление, пропускаем")
             return {"status": "ok"}
         
         payment_obj = notification.get("object", {})
         payment_id = payment_obj.get("id")
         payment_status = payment_obj.get("status")
-        payment_method = payment_obj.get("payment_method", {}).get("type", "unknown")
         
-        logger.info(f"💳 Платёж {payment_id}: статус {payment_status}, метод {payment_method}")
+        logger.info(f"💳 [WEBHOOK] Платёж {payment_id}: статус {payment_status}")
         
         if payment_status == "succeeded":
             # Ищем бронь по payment_id
@@ -666,9 +637,9 @@ async def ykassa_webhook(notification: dict, conn: sqlite3.Connection = Depends(
             ).fetchone()
             
             if booking:
-                logger.info(f"✅ Найдена бронь {booking['id']} по payment_id")
+                logger.info(f"✅ [WEBHOOK] Найдена бронь {booking['id']} по payment_id")
                 confirm_booking(booking["id"], conn)
-                logger.info(f"✅ Бронь {booking['id']} подтверждена!")
+                logger.info(f"✅ [WEBHOOK] Бронь {booking['id']} подтверждена!")
                 return {"status": "ok"}
             
             # Если не нашли — пробуем найти по метаданным
@@ -676,7 +647,7 @@ async def ykassa_webhook(notification: dict, conn: sqlite3.Connection = Depends(
             booking_id = metadata.get("booking_id")
             
             if booking_id:
-                logger.info(f"🔍 Ищем бронь {booking_id} по метаданным")
+                logger.info(f"🔍 [WEBHOOK] Ищем бронь {booking_id} по метаданным")
                 booking = conn.execute(
                     "SELECT id FROM bookings WHERE id = ?", 
                     (booking_id,)
@@ -689,24 +660,24 @@ async def ykassa_webhook(notification: dict, conn: sqlite3.Connection = Depends(
                     )
                     conn.commit()
                     confirm_booking(booking["id"], conn)
-                    logger.info(f"✅ Бронь {booking_id} подтверждена через метаданные!")
+                    logger.info(f"✅ [WEBHOOK] Бронь {booking_id} подтверждена через метаданные!")
                     return {"status": "ok"}
                 else:
-                    logger.warning(f"⚠️ Бронь {booking_id} не найдена")
+                    logger.warning(f"⚠️ [WEBHOOK] Бронь {booking_id} не найдена")
             else:
-                logger.warning(f"⚠️ Нет metadata.booking_id в платеже {payment_id}")
+                logger.warning(f"⚠️ [WEBHOOK] Нет metadata.booking_id в платеже {payment_id}")
         else:
-            logger.info(f"⏳ Статус платежа {payment_status} — ждём завершения")
+            logger.info(f"⏳ [WEBHOOK] Статус платежа {payment_status} — ждём завершения")
             
     except Exception as e:
-        logger.error(f"❌ Ошибка в вебхуке: {e}")
+        logger.error(f"❌ [WEBHOOK] Ошибка: {e}")
         return {"status": "error", "detail": str(e)}
     
     return {"status": "ok"}
 
 @app.patch("/bookings/{booking_id}/status")
 def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
-    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
     if not booking:
         raise HTTPException(404, "Booking not found")
     
@@ -913,7 +884,6 @@ def delete_portfolio_photo(telegram_id: str, photo_id: int, conn: sqlite3.Connec
 # ========== ЗАГРУЗКА ФОТО BASE64 ==========
 @app.post("/master/{telegram_id}/portfolio-base64")
 async def add_portfolio_base64(telegram_id: str, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Загрузка фото в портфолио через Base64 (обход CORS)"""
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, f"Master with telegram_id={telegram_id} not found")
@@ -1139,7 +1109,7 @@ def admin_get_stats(conn: sqlite3.Connection = Depends(get_db)):
     revenue = conn.execute("SELECT SUM(price) FROM bookings b JOIN services s ON b.service_id=s.id WHERE b.status='confirmed'").fetchone()[0] or 0
     return {"masters": masters, "total_bookings": bookings, "confirmed": confirmed, "pending": pending, "reviews": reviews, "revenue": revenue}
 
-# ========== ДОБАВЛЕННЫЕ ЭНДПОИНТЫ ДЛЯ АДМИНКИ ==========
+# ========== ДОБАВЛЕННЫЕ ЭНДПОИНТЫ ==========
 
 @app.post("/masters")
 def create_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
