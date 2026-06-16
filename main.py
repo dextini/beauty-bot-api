@@ -114,7 +114,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Таблица мастеров (IF NOT EXISTS - не трогает существующие данные)
+    # Таблица мастеров
     c.execute("""CREATE TABLE IF NOT EXISTS masters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT DEFAULT '',
@@ -154,6 +154,7 @@ def init_db():
         deposit_amount REAL DEFAULT 0,
         total_amount REAL DEFAULT 0,
         payment_id TEXT,
+        payment_status TEXT DEFAULT 'pending',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         confirmed_at TEXT,
         cancelled_at TEXT,
@@ -270,6 +271,11 @@ def init_db():
     for col in ['avatar']:
         try:
             c.execute(f"ALTER TABLE masters ADD COLUMN {col} TEXT")
+        except: pass
+    
+    for col in ['payment_status']:
+        try:
+            c.execute(f"ALTER TABLE bookings ADD COLUMN {col} TEXT DEFAULT 'pending'")
         except: pass
     
     # ТОЛЬКО ЕСЛИ НЕТ НИ ОДНОГО МАСТЕРА - добавляем тестового
@@ -573,8 +579,8 @@ async def create_booking(data: BookingIn):
         total_with_commission = service["price"] + deposit_amount
         
         cur = conn.execute("""
-            INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time, deposit_amount, total_amount)
-            VALUES (?,?,?,?,?,?,?,?,?)
+            INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time, deposit_amount, total_amount, payment_status)
+            VALUES (?,?,?,?,?,?,?,?,?, 'pending')
         """, (data.master_id, data.service_id, data.client_name, data.client_telegram_id, data.client_phone, data.date, data.time, deposit_amount, total_with_commission))
         conn.commit()
         booking_id = cur.lastrowid
@@ -636,19 +642,66 @@ async def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db
     
     return {"status": "ok", "message": "Payment confirmed"}
 
+# ========== ВЕБХУК ОТ ЮKASSA (ИСПРАВЛЕННЫЙ) ==========
 @app.post("/ykassa-webhook")
 async def ykassa_webhook(notification: dict, conn: sqlite3.Connection = Depends(get_db)):
-    logger.info(f"Webhook received")
-    if notification.get("type") == "notification":
+    logger.info(f"📨 Webhook received: {notification.get('type')}")
+    
+    try:
+        if notification.get("type") != "notification":
+            return {"status": "ok"}
+        
         payment_obj = notification.get("object", {})
         payment_id = payment_obj.get("id")
         payment_status = payment_obj.get("status")
+        payment_method = payment_obj.get("payment_method", {}).get("type", "unknown")
+        
+        logger.info(f"💳 Платёж {payment_id}: статус {payment_status}, метод {payment_method}")
         
         if payment_status == "succeeded":
-            booking = conn.execute("SELECT id FROM bookings WHERE payment_id=?", (payment_id,)).fetchone()
+            # Ищем бронь по payment_id
+            booking = conn.execute(
+                "SELECT id FROM bookings WHERE payment_id = ?", 
+                (payment_id,)
+            ).fetchone()
+            
             if booking:
+                logger.info(f"✅ Найдена бронь {booking['id']} по payment_id")
                 confirm_booking(booking["id"], conn)
-                logger.info(f"✅ Платёж {payment_id} успешен")
+                logger.info(f"✅ Бронь {booking['id']} подтверждена!")
+                return {"status": "ok"}
+            
+            # Если не нашли — пробуем найти по метаданным
+            metadata = payment_obj.get("metadata", {})
+            booking_id = metadata.get("booking_id")
+            
+            if booking_id:
+                logger.info(f"🔍 Ищем бронь {booking_id} по метаданным")
+                booking = conn.execute(
+                    "SELECT id FROM bookings WHERE id = ?", 
+                    (booking_id,)
+                ).fetchone()
+                
+                if booking:
+                    conn.execute(
+                        "UPDATE bookings SET payment_id = ? WHERE id = ?",
+                        (payment_id, booking_id)
+                    )
+                    conn.commit()
+                    confirm_booking(booking["id"], conn)
+                    logger.info(f"✅ Бронь {booking_id} подтверждена через метаданные!")
+                    return {"status": "ok"}
+                else:
+                    logger.warning(f"⚠️ Бронь {booking_id} не найдена")
+            else:
+                logger.warning(f"⚠️ Нет metadata.booking_id в платеже {payment_id}")
+        else:
+            logger.info(f"⏳ Статус платежа {payment_status} — ждём завершения")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка в вебхуке: {e}")
+        return {"status": "error", "detail": str(e)}
+    
     return {"status": "ok"}
 
 @app.patch("/bookings/{booking_id}/status")
@@ -1269,6 +1322,18 @@ async def repeat_trigger_api(data: dict):
         await send_telegram_message(str(user_id), msg)
     
     return {"status": "triggered"}
+
+# ========== ТЕСТОВЫЙ ЭНДПОИНТ (принудительное подтверждение) ==========
+@app.get("/test-payment/{booking_id}")
+async def test_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    """Принудительное подтверждение записи (для теста)"""
+    booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
+    if not booking:
+        raise HTTPException(404, "Booking not found")
+    
+    confirm_booking(booking_id, conn)
+    
+    return {"status": "confirmed", "booking_id": booking_id}
 
 @app.get("/health")
 def health_check():
