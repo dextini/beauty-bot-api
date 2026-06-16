@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Request, Form, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles  # ✅ ДОБАВЛЕНО
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
 import sqlite3
@@ -318,7 +318,16 @@ def init_db():
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Маникюр классический", 1200, 60))
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Маникюр с покрытием гель-лак", 2000, 90))
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Педикюр", 2500, 120))
-        logger.info("✅ Тестовый мастер добавлен")
+        
+        # ✅ Добавляем тестовое портфолио
+        c.execute("INSERT INTO portfolio (master_id, photo_url, description) VALUES (?, ?, ?)", 
+                  (master_id, "/photos/test1.jpg", "Маникюр с дизайном 🌸"))
+        c.execute("INSERT INTO portfolio (master_id, photo_url, description) VALUES (?, ?, ?)", 
+                  (master_id, "/photos/test2.jpg", "Френч с блестками ✨"))
+        c.execute("INSERT INTO portfolio (master_id, photo_url, description) VALUES (?, ?, ?)", 
+                  (master_id, "/photos/test3.jpg", "Маникюр в нюдовых тонах 💅"))
+        
+        logger.info("✅ Тестовый мастер и портфолио добавлены")
     else:
         logger.info(f"✅ БД уже содержит {count} мастеров, ничего не удаляем")
     
@@ -545,6 +554,22 @@ def get_master_by_id(master_id: int, conn=Depends(get_db)):
     d["portfolio"] = [dict(p) for p in portfolio]
     d["reviews"] = [dict(r) for r in reviews]
     return d
+
+# ========== ПОРТФОЛИО МАСТЕРА (ДЛЯ КЛИЕНТОВ) ==========
+@app.get("/masters/{master_id}/portfolio")
+def get_master_portfolio(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    """Получить портфолио мастера по его ID (для клиентов)"""
+    try:
+        portfolio = conn.execute("""
+            SELECT id, photo_url, description, created_at
+            FROM portfolio 
+            WHERE master_id = ? 
+            ORDER BY created_at DESC
+        """, (master_id,)).fetchall()
+        return [dict(p) for p in portfolio]
+    except Exception as e:
+        logger.error(f"Ошибка получения портфолио: {e}")
+        return []
 
 @app.get("/masters/{master_id}/slots")
 def get_slots(master_id: int, date: str, service_id: int, conn=Depends(get_db)):
@@ -932,7 +957,7 @@ def get_avatar(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
         return {"avatar_url": None}
     return {"avatar_url": master["avatar"]}
 
-# ========== ПОРТФОЛИО ==========
+# ========== ПОРТФОЛИО (ДЛЯ МАСТЕРА) ==========
 @app.get("/master/{telegram_id}/portfolio")
 def get_portfolio(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
@@ -1470,10 +1495,10 @@ def health_check():
 def root():
     return {"status": "Beauty Bot API running 🌸", "version": "3.0.0"}
 
-# ========== ЭНДПОИНТ ДЛЯ РУЧНОЙ ОТДАЧИ ФОТО (НА СЛУЧАЙ ЕСЛИ STATICFILES НЕ РАБОТАЕТ) ==========
+# ========== ЭНДПОИНТ ДЛЯ РУЧНОЙ ОТДАЧИ ФОТО ==========
 @app.get("/photos/{filename}")
 async def get_photo(filename: str):
-    """Ручной эндпоинт для отдачи фото, если StaticFiles по какой-то причине не работает"""
+    """Ручной эндпоинт для отдачи фото"""
     file_path = os.path.join(PHOTO_DIR, filename)
     if os.path.exists(file_path):
         return FileResponse(file_path)
