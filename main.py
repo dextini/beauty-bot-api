@@ -641,11 +641,8 @@ async def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db
 
 # ========== ВЕБХУК ОТ ЮKASSA ==========
 @app.post("/ykassa-webhook")
-async def ykassa_webhook(request: Request):
-    """Обработка вебхуков от ЮKassa с новым подключением к БД"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    
+async def ykassa_webhook(request: Request, conn: sqlite3.Connection = Depends(get_db)):
+    """Обработка вебхуков от ЮKassa"""
     try:
         body = await request.body()
         raw_body = body.decode('utf-8')
@@ -728,8 +725,6 @@ async def ykassa_webhook(request: Request):
     except Exception as e:
         logger.error(f"❌ [WEBHOOK] Ошибка: {e}")
         return {"status": "error", "detail": str(e)}
-    finally:
-        conn.close()
     
     return {"status": "ok"}
 
@@ -899,13 +894,68 @@ def delete_quick_reply(telegram_id: str, reply_id: int, conn: sqlite3.Connection
     conn.commit()
     return {"status": "ok"}
 
-# ========== ПОРТФОЛИО ==========
-@app.post("/master/{telegram_id}/upload-portfolio")
-async def upload_portfolio(telegram_id: str, file: UploadFile = File(...), description: str = Form(""), conn: sqlite3.Connection = Depends(get_db)):
+# ========== ⭐ ЗАГРУЗКА АВАТАРА (РАБОЧИЙ АПЛОАД) ==========
+@app.post("/master/{telegram_id}/upload-avatar")
+async def upload_avatar(
+    telegram_id: str,
+    file: UploadFile = File(...),
+    conn: sqlite3.Connection = Depends(get_db)
+):
+    """Загрузка аватара мастера"""
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
     
+    # Проверка типа файла
+    if not file.content_type.startswith('image/'):
+        raise HTTPException(400, "File must be an image")
+    
+    # Проверка размера (макс 5MB)
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+    if size > 5 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 5MB)")
+    
+    # Сохраняем файл
+    ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
+    filename = f"avatar_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
+    filepath = os.path.join(PHOTO_DIR, filename)
+    
+    with open(filepath, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    avatar_url = f"/photos/{filename}"
+    conn.execute("UPDATE masters SET avatar = ? WHERE id = ?", (avatar_url, master["id"]))
+    conn.commit()
+    
+    return {"avatar_url": avatar_url, "status": "ok"}
+
+# ========== ⭐ ЗАГРУЗКА ПОРТФОЛИО (РАБОЧИЙ АПЛОАД) ==========
+@app.post("/master/{telegram_id}/upload-portfolio")
+async def upload_portfolio(
+    telegram_id: str,
+    file: UploadFile = File(...),
+    description: str = Form(""),
+    conn: sqlite3.Connection = Depends(get_db)
+):
+    """Загрузка фото в портфолио"""
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    
+    # Проверка типа файла
+    if not file.content_type.startswith('image/'):
+        raise HTTPException(400, "File must be an image")
+    
+    # Проверка размера (макс 10MB)
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+    if size > 10 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 10MB)")
+    
+    # Сохраняем файл
     ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
     filename = f"portfolio_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
     filepath = os.path.join(PHOTO_DIR, filename)
@@ -922,93 +972,63 @@ async def upload_portfolio(telegram_id: str, file: UploadFile = File(...), descr
     
     return {"photo_url": photo_url, "status": "ok"}
 
-@app.delete("/master/{telegram_id}/portfolio/{photo_id}")
-def delete_portfolio_photo(telegram_id: str, photo_id: int, conn: sqlite3.Connection = Depends(get_db)):
+# ========== ПОЛУЧЕНИЕ СПИСКА ПОРТФОЛИО ==========
+@app.get("/master/{telegram_id}/portfolio")
+def get_portfolio(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    """Получить все фото портфолио мастера"""
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master:
         raise HTTPException(404, "Master not found")
     
-    photo = conn.execute("SELECT photo_url FROM portfolio WHERE id=? AND master_id=?", (photo_id, master["id"])).fetchone()
+    rows = conn.execute("""
+        SELECT id, photo_url, description
+        FROM portfolio
+        WHERE master_id = ?
+        ORDER BY created_at DESC
+    """, (master["id"],)).fetchall()
+    
+    return [dict(r) for r in rows]
+
+# ========== УДАЛЕНИЕ ФОТО ИЗ ПОРТФОЛИО ==========
+@app.delete("/master/{telegram_id}/portfolio/{photo_id}")
+def delete_portfolio_photo(
+    telegram_id: str,
+    photo_id: int,
+    conn: sqlite3.Connection = Depends(get_db)
+):
+    """Удалить фото из портфолио"""
+    master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
+    if not master:
+        raise HTTPException(404, "Master not found")
+    
+    # Удаляем файл
+    photo = conn.execute(
+        "SELECT photo_url FROM portfolio WHERE id = ? AND master_id = ?",
+        (photo_id, master["id"])
+    ).fetchone()
+    
     if photo and photo["photo_url"]:
         filename = photo["photo_url"].replace("/photos/", "")
         filepath = os.path.join(PHOTO_DIR, filename)
         if os.path.exists(filepath):
             os.remove(filepath)
     
-    conn.execute("DELETE FROM portfolio WHERE id=? AND master_id=?", (photo_id, master["id"]))
+    conn.execute(
+        "DELETE FROM portfolio WHERE id = ? AND master_id = ?",
+        (photo_id, master["id"])
+    )
     conn.commit()
+    
     return {"status": "ok"}
 
-# ========== ЗАГРУЗКА ФОТО BASE64 ==========
-@app.post("/master/{telegram_id}/portfolio-base64")
-async def add_portfolio_base64(telegram_id: str, data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
-    if not master:
-        raise HTTPException(404, f"Master with telegram_id={telegram_id} not found")
-    
-    import base64 as b64
-    photo_base64 = data.get("photo_base64")
-    filename = data.get("filename", "photo.jpg")
-    description = data.get("description", "")
-    
-    if not photo_base64:
-        raise HTTPException(400, "photo_base64 required")
-    
-    try:
-        image_data = b64.b64decode(photo_base64)
-        
-        ext = filename.split(".")[-1] if "." in filename else "jpg"
-        filename = f"portfolio_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
-        filepath = os.path.join(PHOTO_DIR, filename)
-        
-        with open(filepath, "wb") as buffer:
-            buffer.write(image_data)
-        
-        photo_url = f"/photos/{filename}"
-        conn.execute("""
-            INSERT INTO portfolio (master_id, photo_url, description)
-            VALUES (?, ?, ?)
-        """, (master["id"], photo_url, description))
-        conn.commit()
-        
-        return {"photo_url": photo_url, "status": "ok"}
-    except Exception as e:
-        logger.error(f"Ошибка сохранения фото: {e}")
-        raise HTTPException(500, str(e))
-
-# ========== АВАТАР МАСТЕРА ==========
-@app.post("/master/{telegram_id}/upload-avatar")
-async def upload_avatar(telegram_id: str, file: UploadFile = File(...), conn: sqlite3.Connection = Depends(get_db)):
-    master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
-    if not master:
-        raise HTTPException(404, "Master not found")
-    
-    ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
-    filename = f"avatar_{master['id']}_{int(datetime.now().timestamp())}.{ext}"
-    filepath = os.path.join(PHOTO_DIR, filename)
-    
-    with open(filepath, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    avatar_url = f"/photos/{filename}"
-    conn.execute("UPDATE masters SET avatar = ? WHERE id = ?", (avatar_url, master["id"]))
-    conn.commit()
-    
-    return {"avatar_url": avatar_url, "status": "ok"}
-
+# ========== ПОЛУЧЕНИЕ АВАТАРА ==========
 @app.get("/master/{telegram_id}/avatar")
-def get_master_avatar(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+def get_avatar(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    """Получить ссылку на аватар мастера"""
     master = conn.execute("SELECT avatar FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
     if not master or not master["avatar"]:
         return {"avatar_url": None}
     return {"avatar_url": master["avatar"]}
-
-@app.get("/photos/{filename}")
-async def get_photo(filename: str):
-    filepath = os.path.join(PHOTO_DIR, filename)
-    if not os.path.exists(filepath):
-        raise HTTPException(404, "Photo not found")
-    return FileResponse(filepath)
 
 # ========== ИЗБРАННОЕ ==========
 @app.post("/favorites/{master_id}")
@@ -1351,25 +1371,19 @@ async def repeat_trigger_api(data: dict):
     
     return {"status": "triggered"}
 
-# ========== ⭐ НОВЫЕ ЭНДПОИНТЫ ДЛЯ АВТОМАТИЧЕСКОГО ПОДТВЕРЖДЕНИЯ (С ИСПРАВЛЕНИЕМ SQLITE) ==========
+# ========== НОВЫЕ ЭНДПОИНТЫ ДЛЯ ПРОВЕРКИ ОПЛАТЫ ==========
 
 @app.get("/bookings/{booking_id}")
-def get_booking(booking_id: int):
-    """Получить информацию о записи (создаёт новое подключение к БД)"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    
-    try:
-        booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
-        if not booking:
-            raise HTTPException(404, "Booking not found")
-        return dict(booking)
-    finally:
-        conn.close()
+def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    """Получить информацию о записи"""
+    booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
+    if not booking:
+        raise HTTPException(404, "Booking not found")
+    return dict(booking)
 
 @app.post("/bookings/{booking_id}/confirm")
 async def confirm_booking_by_id(booking_id: int):
-    """Принудительное подтверждение записи (создаёт новое подключение к БД)"""
+    """Принудительное подтверждение записи (для теста)"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     
@@ -1381,27 +1395,9 @@ async def confirm_booking_by_id(booking_id: int):
         if booking["status"] == "confirmed":
             return {"status": "already_confirmed", "booking_id": booking_id}
         
-        # Подтверждаем
-        conn.execute("UPDATE bookings SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
-        conn.commit()
-        
-        # Отправляем уведомления
-        master = conn.execute("SELECT * FROM masters WHERE id=?", (booking["master_id"],)).fetchone()
-        service = conn.execute("SELECT * FROM services WHERE id=?", (booking["service_id"],)).fetchone()
-        
-        token = secrets.token_urlsafe(16)
-        conn.execute("INSERT OR IGNORE INTO chats (booking_id, master_id, client_telegram_id, master_telegram_id, token) VALUES (?,?,?,?,?)",
-                    (booking_id, master["id"], booking["client_telegram_id"], master["telegram_id"], token))
-        conn.commit()
-        
-        master_msg = f"🌸 *НОВАЯ ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸\n\n👩 {booking['client_name']}\n📞 {booking['client_phone'] or 'не указан'}\n💅 {service['name']}\n💰 {service['price']} ₽\n💸 Депозит: {booking['deposit_amount']} ₽\n📅 {booking['date']} в {booking['time']}"
-        client_msg = f"🌸 *ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸\n\n💅 {master['name']}\n📍 {master['address']}\n💅 {service['name']}\n💰 {service['price']} ₽\n💸 Оплачено: {booking['deposit_amount']} ₽\n💎 Остаток: {service['price']} ₽\n📅 {booking['date']} в {booking['time']}"
-        
-        asyncio.create_task(send_telegram_message(master["telegram_id"], master_msg))
-        asyncio.create_task(send_telegram_message(booking["client_telegram_id"], client_msg))
+        confirm_booking(booking_id, conn)
         
         return {"status": "confirmed", "booking_id": booking_id}
-        
     finally:
         conn.close()
 
