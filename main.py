@@ -613,7 +613,33 @@ async def create_booking(data: BookingIn):
     finally:
         conn.close()
 
-# ========== ⭐ ВЕБХУК ОТ ЮKASSA (ДОБАВЛЕНЫ ЛОГИ) ==========
+@app.post("/payment-callback")
+async def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    booking_id = data.get("booking_id")
+    payment_id = data.get("payment_id")
+    
+    if not booking_id:
+        return {"status": "error", "message": "booking_id required"}
+    
+    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    if not booking:
+        return {"status": "error", "message": "Booking not found"}
+    
+    conn.execute("""
+        UPDATE bookings 
+        SET status = 'confirmed', 
+            payment_status = 'paid',
+            confirmed_at = CURRENT_TIMESTAMP,
+            payment_id = ?
+        WHERE id = ?
+    """, (payment_id, booking_id))
+    conn.commit()
+    
+    confirm_booking(booking_id, conn)
+    
+    return {"status": "ok", "message": "Payment confirmed"}
+
+# ========== ВЕБХУК ОТ ЮKASSA ==========
 @app.post("/ykassa-webhook")
 async def ykassa_webhook(notification: dict, conn: sqlite3.Connection = Depends(get_db)):
     logger.info(f"📨 [WEBHOOK] Получен запрос: {notification}")
@@ -1109,7 +1135,7 @@ def admin_get_stats(conn: sqlite3.Connection = Depends(get_db)):
     revenue = conn.execute("SELECT SUM(price) FROM bookings b JOIN services s ON b.service_id=s.id WHERE b.status='confirmed'").fetchone()[0] or 0
     return {"masters": masters, "total_bookings": bookings, "confirmed": confirmed, "pending": pending, "reviews": reviews, "revenue": revenue}
 
-# ========== ДОБАВЛЕННЫЕ ЭНДПОИНТЫ ==========
+# ========== ДОБАВЛЕННЫЕ ЭНДПОИНТЫ ДЛЯ АДМИНКИ ==========
 
 @app.post("/masters")
 def create_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
@@ -1293,7 +1319,7 @@ async def repeat_trigger_api(data: dict):
     
     return {"status": "triggered"}
 
-# ========== ⭐ НОВЫЕ ЭНДПОИНТЫ ДЛЯ ПРОВЕРКИ ОПЛАТЫ ==========
+# ========== ⭐ НОВЫЕ ЭНДПОИНТЫ ДЛЯ АВТОМАТИЧЕСКОГО ПОДТВЕРЖДЕНИЯ ==========
 
 @app.get("/bookings/{booking_id}")
 def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
@@ -1303,9 +1329,9 @@ def get_booking(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
         raise HTTPException(404, "Booking not found")
     return dict(booking)
 
-@app.get("/test-payment/{booking_id}")
-async def test_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    """Принудительное подтверждение записи (для теста)"""
+@app.post("/bookings/{booking_id}/confirm")
+async def confirm_booking_by_id(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    """Принудительное подтверждение записи"""
     booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
     if not booking:
         raise HTTPException(404, "Booking not found")
