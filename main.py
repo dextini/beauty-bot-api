@@ -1242,6 +1242,52 @@ def admin_add_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     master_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     return {"status": "ok", "master_id": master_id, "telegram_id": telegram_id}
 
+# ========== АДМИН-ПАНЕЛЬ (РАСШИРЕННАЯ) ==========
+@app.post("/admin/add-master-full")
+def admin_add_master_full(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    """Добавление мастера со всеми данными (Имя, Адрес, Телефон, Instagram, Описание)"""
+    try:
+        name = data.get("name", "").strip()
+        address = data.get("address", "").strip()
+        phone = data.get("phone", "").strip()
+        instagram = data.get("instagram", "").strip()
+        description = data.get("description", "").strip()
+        telegram_id = data.get("telegram_id", "").strip()
+        
+        if not name:
+            raise HTTPException(400, "Имя обязательно")
+        
+        if not telegram_id:
+            raise HTTPException(400, "Telegram ID обязателен")
+        
+        # Проверяем, существует ли мастер с таким Telegram ID
+        existing = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
+        if existing:
+            raise HTTPException(400, f"Мастер с Telegram ID {telegram_id} уже существует")
+        
+        # Добавляем мастера
+        conn.execute("""
+            INSERT INTO masters (name, address, phone, instagram, description, telegram_id, lat, lon, icon, work_start, work_end)
+            VALUES (?, ?, ?, ?, ?, ?, 55.751244, 37.618423, '💅', '09:00', '20:00')
+        """, (name, address, phone, instagram, description, telegram_id))
+        conn.commit()
+        
+        master_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        
+        return {
+            "status": "ok", 
+            "master_id": master_id, 
+            "telegram_id": telegram_id,
+            "name": name,
+            "message": f"Мастер {name} успешно добавлен!"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка добавления мастера: {e}")
+        raise HTTPException(500, detail=str(e))
+
 @app.get("/admin/masters")
 def admin_get_masters(conn: sqlite3.Connection = Depends(get_db)):
     masters = conn.execute("""
