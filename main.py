@@ -118,13 +118,13 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Таблица мастеров
+    # Таблица мастеров (РОСТОВ-НА-ДОНУ ПО УМОЛЧАНИЮ)
     c.execute("""CREATE TABLE IF NOT EXISTS masters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT DEFAULT '',
         address TEXT DEFAULT '',
-        lat REAL DEFAULT 55.751244,
-        lon REAL DEFAULT 37.618423,
+        lat REAL DEFAULT 47.222078,
+        lon REAL DEFAULT 39.720358,
         phone TEXT DEFAULT '',
         instagram TEXT DEFAULT '',
         telegram_id TEXT UNIQUE,
@@ -1235,7 +1235,7 @@ def admin_add_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     
     conn.execute("""
         INSERT INTO masters (telegram_id, name, address, lat, lon, phone, instagram, description, icon, work_start, work_end, bot_token)
-        VALUES (?, 'Новый мастер', '', 55.751244, 37.618423, '', '', '', '💅', '09:00', '20:00', '')
+        VALUES (?, 'Новый мастер', '', 47.222078, 39.720358, '', '', '', '💅', '09:00', '20:00', '')
     """, (telegram_id,))
     conn.commit()
     
@@ -1265,10 +1265,10 @@ def admin_add_master_full(data: dict, conn: sqlite3.Connection = Depends(get_db)
         if existing:
             raise HTTPException(400, f"Мастер с Telegram ID {telegram_id} уже существует")
         
-        # Добавляем мастера
+        # Добавляем мастера (РОСТОВ-НА-ДОНУ ПО УМОЛЧАНИЮ)
         conn.execute("""
             INSERT INTO masters (name, address, phone, instagram, description, telegram_id, lat, lon, icon, work_start, work_end)
-            VALUES (?, ?, ?, ?, ?, ?, 55.751244, 37.618423, '💅', '09:00', '20:00')
+            VALUES (?, ?, ?, ?, ?, ?, 47.222078, 39.720358, '💅', '09:00', '20:00')
         """, (name, address, phone, instagram, description, telegram_id))
         conn.commit()
         
@@ -1328,8 +1328,8 @@ def admin_get_stats(conn: sqlite3.Connection = Depends(get_db)):
 def create_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     telegram_id = data.get("telegram_id")
     name = data.get("name", "Новый мастер")
-    lat = data.get("lat", 55.751244)
-    lon = data.get("lon", 37.618423)
+    lat = data.get("lat", 47.222078)
+    lon = data.get("lon", 39.720358)
     description = data.get("description", "")
     
     if telegram_id:
