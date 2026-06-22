@@ -34,6 +34,9 @@ PAYMENT_COMMISSION = 0.07
 CLEANING_TIME = 15
 MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 
+# ✅ ТВОЙ TELEGRAM ID (для уведомлений админа)
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "5295945192")  # ЗАМЕНИ НА СВОЙ
+
 # === ПУТЬ К БАЗЕ ===
 DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
 PHOTO_DIR = os.path.join(os.getcwd(), "data", "photos")
@@ -145,7 +148,8 @@ def init_db():
         description TEXT DEFAULT '',
         icon TEXT DEFAULT '💅',
         rating REAL DEFAULT 0,
-        avatar TEXT
+        avatar TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
     c.execute("""CREATE TABLE IF NOT EXISTS services (
@@ -307,6 +311,11 @@ def init_db():
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col} INTEGER DEFAULT 0")
         except: pass
     
+    # Добавляем created_at если нет
+    try:
+        c.execute("ALTER TABLE masters ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP")
+    except: pass
+    
     c.execute("SELECT COUNT(*) FROM masters")
     count = c.fetchone()[0]
     if count == 0:
@@ -341,6 +350,24 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+def get_all_masters(conn):
+    """Получить всех мастеров из БД"""
+    try:
+        masters = conn.execute("SELECT id, name, telegram_id FROM masters WHERE telegram_id IS NOT NULL AND telegram_id != ''").fetchall()
+        return [dict(m) for m in masters]
+    except Exception as e:
+        logger.error(f"Ошибка получения мастеров: {e}")
+        return []
+
+def get_master_by_id(conn, master_id):
+    """Получить мастера по ID"""
+    try:
+        master = conn.execute("SELECT * FROM masters WHERE id = ?", (master_id,)).fetchone()
+        return dict(master) if master else None
+    except Exception as e:
+        logger.error(f"Ошибка получения мастера: {e}")
+        return None
 
 def time_to_minutes(time_str: str) -> int:
     h, m = map(int, time_str.split(':'))
@@ -429,47 +456,65 @@ def send_telegram_message_sync(chat_id: str, message: str, parse_mode: str = "Ma
     except Exception as e:
         logger.error(f"❌ Ошибка Telegram: {e}")
 
-# ========== НОВАЯ ФУНКЦИЯ: ОТПРАВКА В ГЛАВНЫЙ БОТ ==========
-async def send_notification_to_bot(message: str):
-    """Отправка уведомления в главный бот (в чат с ботом)"""
+# ========== ОТПРАВКА УВЕДОМЛЕНИЙ ВСЕМ МАСТЕРАМ ==========
+def send_notification_to_all_masters(message: str, conn: sqlite3.Connection):
+    """Отправить уведомление всем мастерам из БД"""
     try:
-        bot_id = MASTER_BOT_TOKEN.split(":")[0]
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
-                json={
-                    "chat_id": bot_id,
-                    "text": message,
-                    "parse_mode": "Markdown"
-                }
-            )
-        logger.info(f"✅ Уведомление отправлено в бот (ID: {bot_id})")
+        masters = get_all_masters(conn)
+        if not masters:
+            logger.warning("⚠️ Нет мастеров для отправки уведомлений")
+            return
+        
+        sent_count = 0
+        for master in masters:
+            if master.get("telegram_id"):
+                send_telegram_message_sync(master["telegram_id"], message)
+                sent_count += 1
+                logger.info(f"✅ Уведомление отправлено мастеру {master['name']} ({master['telegram_id']})")
+        
+        logger.info(f"✅ Уведомления отправлены {sent_count} мастерам")
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки в бот: {e}")
+        logger.error(f"❌ Ошибка отправки уведомлений мастерам: {e}")
 
-def send_notification_to_bot_sync(message: str):
-    """Синхронная отправка уведомления в главный бот"""
+def send_notification_to_admin_sync(message: str):
+    """Отправка уведомления админу в личку"""
     try:
-        bot_id = MASTER_BOT_TOKEN.split(":")[0]
         response = requests.post(
             f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
             json={
-                "chat_id": bot_id,
+                "chat_id": ADMIN_CHAT_ID,
                 "text": message,
                 "parse_mode": "Markdown"
             },
             timeout=10
         )
         if response.status_code == 200:
-            logger.info(f"✅ Уведомление отправлено в бот (ID: {bot_id})")
+            logger.info(f"✅ Уведомление отправлено админу {ADMIN_CHAT_ID}")
         else:
-            logger.error(f"❌ Ошибка отправки: {response.status_code}")
+            logger.error(f"❌ Ошибка отправки админу: {response.status_code} - {response.text}")
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки в бот: {e}")
+        logger.error(f"❌ Ошибка отправки админу: {e}")
 
-# ========== ПОДТВЕРЖДЕНИЕ БРОНИ (С УВЕДОМЛЕНИЕМ В БОТ) ==========
+async def send_notification_to_admin(message: str):
+    """Асинхронная отправка уведомления админу"""
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": ADMIN_CHAT_ID,
+                    "text": message,
+                    "parse_mode": "Markdown"
+                }
+            )
+        logger.info(f"✅ Уведомление отправлено админу {ADMIN_CHAT_ID}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки админу: {e}")
+
+# ========== ПОДТВЕРЖДЕНИЕ БРОНИ ==========
 def confirm_booking(booking_id: int, conn: sqlite3.Connection):
-    """Подтверждение записи и отправка уведомлений (включая главный бот)"""
+    """Подтверждение записи и отправка уведомлений ВСЕМ"""
     try:
         booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
         if not booking:
@@ -495,7 +540,7 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
                     (booking_id, master["id"], booking["client_telegram_id"], master["telegram_id"], token))
         conn.commit()
         
-        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ
+        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ (В ЛИЧКУ)
         master_msg = f"""🌸 *НОВАЯ ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸
 
 👩 {booking['client_name']}
@@ -506,6 +551,9 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
 📅 {booking['date']} в {booking['time']}
 
 📌 Подтвердите запись в кабинете мастера"""
+        
+        if master.get("telegram_id"):
+            send_telegram_message_sync(master["telegram_id"], master_msg)
         
         # ✅ УВЕДОМЛЕНИЕ КЛИЕНТУ
         client_msg = f"""🌸 *ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸
@@ -519,9 +567,12 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
 📅 {booking['date']} в {booking['time']}
 
 💬 Если у вас есть вопросы, напишите мастеру в чат"""
-
-        # ✅ НОВОЕ: УВЕДОМЛЕНИЕ В ГЛАВНЫЙ БОТ
-        bot_msg = f"""🌸 *НОВАЯ ОПЛАЧЕННАЯ ЗАПИСЬ!* 🌸
+        
+        if booking.get("client_telegram_id"):
+            send_telegram_message_sync(booking["client_telegram_id"], client_msg)
+        
+        # ✅ УВЕДОМЛЕНИЕ ВСЕМ МАСТЕРАМ (ОБЩЕЕ)
+        all_masters_msg = f"""🌸 *НОВАЯ ОПЛАЧЕННАЯ ЗАПИСЬ!* 🌸
 
 👤 Клиент: {booking['client_name']}
 📞 Телефон: {booking['client_phone'] or 'не указан'}
@@ -534,16 +585,26 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
 🆔 ID записи: {booking_id}
 
 📌 Статус: ПОДТВЕРЖДЕНА ✅"""
+        
+        # Отправляем ВСЕМ мастерам
+        send_notification_to_all_masters(all_masters_msg, conn)
+        
+        # ✅ УВЕДОМЛЕНИЕ АДМИНУ (В ЛИЧКУ)
+        admin_msg = f"""🌸 *НОВАЯ ОПЛАЧЕННАЯ ЗАПИСЬ!* 🌸
 
-        # Отправляем уведомления
-        if master.get("telegram_id"):
-            send_telegram_message_sync(master["telegram_id"], master_msg)
+👤 Клиент: {booking['client_name']}
+📞 Телефон: {booking['client_phone'] or 'не указан'}
+💅 Услуга: {service['name']}
+💰 Стоимость: {service['price']} ₽
+💸 Депозит: {booking['deposit_amount']} ₽
+📅 Дата: {booking['date']}
+⏰ Время: {booking['time']}
+👩‍💼 Мастер: {master['name']}
+🆔 ID записи: {booking_id}
+
+📌 Статус: ПОДТВЕРЖДЕНА ✅"""
         
-        if booking.get("client_telegram_id"):
-            send_telegram_message_sync(booking["client_telegram_id"], client_msg)
-        
-        # ✅ ОТПРАВЛЯЕМ В ГЛАВНЫЙ БОТ
-        send_notification_to_bot_sync(bot_msg)
+        send_notification_to_admin_sync(admin_msg)
         
         logger.info(f"✅ Бронь {booking_id} подтверждена, уведомления отправлены")
         
@@ -766,7 +827,7 @@ def get_slots(master_id: int, date: str, service_id: int, conn=Depends(get_db)):
     
     return {"date": date, "slots": free_slots, "day_off": False}
 
-# ========== СОЗДАНИЕ БРОНИ (С УВЕДОМЛЕНИЕМ В БОТ) ==========
+# ========== СОЗДАНИЕ БРОНИ ==========
 @app.post("/bookings")
 async def create_booking(data: BookingIn):
     conn = get_db()
@@ -806,12 +867,12 @@ async def create_booking(data: BookingIn):
         conn.execute("UPDATE bookings SET payment_id=? WHERE id=?", (payment["payment_id"], booking_id))
         conn.commit()
         
-        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ
+        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ (В ЛИЧКУ)
         master_msg = f"💳 *НОВАЯ ЗАЯВКА* 💳\n\n👩 {data.client_name}\n📞 {data.client_phone or 'не указан'}\n💅 {service['name']}\n💰 {service['price']} ₽\n💸 Депозит: {deposit_amount} ₽\n📅 {data.date} в {data.time}"
         asyncio.create_task(send_telegram_message(master["telegram_id"], master_msg))
         
-        # ✅ НОВОЕ: УВЕДОМЛЕНИЕ В ГЛАВНЫЙ БОТ О НОВОЙ ЗАЯВКЕ
-        bot_msg = f"""💳 *НОВАЯ ЗАЯВКА НА ЗАПИСЬ!* 💳
+        # ✅ УВЕДОМЛЕНИЕ ВСЕМ МАСТЕРАМ (О НОВОЙ ЗАЯВКЕ)
+        all_masters_msg = f"""💳 *НОВАЯ ЗАЯВКА НА ЗАПИСЬ!* 💳
 
 👤 Клиент: {data.client_name}
 📞 Телефон: {data.client_phone or 'не указан'}
@@ -824,7 +885,26 @@ async def create_booking(data: BookingIn):
 🆔 ID записи: {booking_id}
 
 📌 Статус: ОЖИДАЕТ ОПЛАТЫ ⏳"""
-        asyncio.create_task(send_telegram_message(MASTER_BOT_TOKEN.split(":")[0], bot_msg))
+        
+        # Отправляем ВСЕМ мастерам
+        send_notification_to_all_masters(all_masters_msg, conn)
+        
+        # ✅ УВЕДОМЛЕНИЕ АДМИНУ (В ЛИЧКУ)
+        admin_msg = f"""💳 *НОВАЯ ЗАЯВКА НА ЗАПИСЬ!* 💳
+
+👤 Клиент: {data.client_name}
+📞 Телефон: {data.client_phone or 'не указан'}
+💅 Услуга: {service['name']}
+💰 Стоимость: {service['price']} ₽
+💸 Депозит: {deposit_amount} ₽
+📅 Дата: {data.date}
+⏰ Время: {data.time}
+👩‍💼 Мастер: {master['name']}
+🆔 ID записи: {booking_id}
+
+📌 Статус: ОЖИДАЕТ ОПЛАТЫ ⏳"""
+        
+        asyncio.create_task(send_notification_to_admin(admin_msg))
         
         return {
             "booking_id": booking_id,
@@ -914,6 +994,10 @@ async def ykassa_webhook(request: Request, conn: sqlite3.Connection = Depends(ge
     
     return {"status": "ok"}
 
+# ═══════════════════════════════════════════════════════════════════
+#  ОСТАЛЬНЫЕ ЭНДПОИНТЫ (ОНИ НЕ ИЗМЕНИЛИСЬ, НО ДЛЯ ПОЛНОТЫ КОДА)
+# ═══════════════════════════════════════════════════════════════════
+
 @app.patch("/bookings/{booking_id}/status")
 def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
     booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
@@ -951,7 +1035,6 @@ def check_waitlist(master_id: int, service_id: int, date: str, conn: sqlite3.Con
         conn.execute("UPDATE waitlist SET notified = 1 WHERE id = ?", (waitlist["id"],))
         conn.commit()
 
-# ========== ОТЗЫВЫ ==========
 @app.post("/reviews")
 def submit_review(data: ReviewIn, conn: sqlite3.Connection = Depends(get_db)):
     try:
@@ -1005,7 +1088,6 @@ def get_master_reviews(master_id: int, conn: sqlite3.Connection = Depends(get_db
     """, (master_id,)).fetchall()
     return [dict(r) for r in reviews]
 
-# ========== ЛИСТ ОЖИДАНИЯ ==========
 @app.post("/waitlist")
 def add_to_waitlist(data: WaitlistIn, conn: sqlite3.Connection = Depends(get_db)):
     conn.execute("""
@@ -1016,7 +1098,6 @@ def add_to_waitlist(data: WaitlistIn, conn: sqlite3.Connection = Depends(get_db)
     
     return {"status": "ok", "message": "Вы добавлены в лист ожидания. Мы уведомим вас при освобождении слота! 🌸"}
 
-# ========== ПРОФИЛЬ МАСТЕРА ==========
 @app.patch("/master/{telegram_id}/profile")
 def update_master_profile(telegram_id: str, data: dict, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
@@ -1048,7 +1129,6 @@ def update_work_hours(telegram_id: str, data: WorkHoursUpdate, conn: sqlite3.Con
     conn.commit()
     return {"status": "ok"}
 
-# ========== УСЛУГИ ==========
 @app.post("/master/{telegram_id}/services")
 def add_service(telegram_id: str, data: ServiceIn, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
@@ -1076,7 +1156,6 @@ def get_master_services(telegram_id: str, conn: sqlite3.Connection = Depends(get
     services = conn.execute("SELECT * FROM services WHERE master_id=?", (master["id"],)).fetchall()
     return [dict(s) for s in services]
 
-# ========== БЫСТРЫЕ ОТВЕТЫ ==========
 @app.post("/master/{telegram_id}/quick-replies")
 def add_quick_reply(telegram_id: str, data: QuickReplyIn, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
@@ -1104,7 +1183,6 @@ def delete_quick_reply(telegram_id: str, reply_id: int, conn: sqlite3.Connection
     conn.commit()
     return {"status": "ok"}
 
-# ========== АВАТАР ==========
 @app.post("/master/{telegram_id}/upload-avatar")
 async def upload_avatar(
     telegram_id: str,
@@ -1152,7 +1230,6 @@ def get_avatar(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
         return {"avatar_url": None}
     return {"avatar_url": master["avatar"]}
 
-# ========== ПОРТФОЛИО (ДЛЯ МАСТЕРА) ==========
 @app.get("/master/{telegram_id}/portfolio")
 def get_portfolio(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     master = conn.execute("SELECT id FROM masters WHERE telegram_id=?", (telegram_id,)).fetchone()
@@ -1241,7 +1318,6 @@ def delete_portfolio_photo(
     
     return {"status": "ok"}
 
-# ========== ПОРТФОЛИО "ДО/ПОСЛЕ" ==========
 @app.get("/masters/{master_id}/before-after")
 def get_before_after(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     rows = conn.execute("""
@@ -1287,7 +1363,6 @@ def delete_before_after(telegram_id: str, item_id: int, conn: sqlite3.Connection
     conn.commit()
     return {"status": "ok"}
 
-# ========== ДНИ ОТДЫХА ==========
 @app.get("/masters/{master_id}/days_off")
 def get_days_off(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
     try:
@@ -1327,7 +1402,6 @@ def remove_day_off(master_id: int, date: str, conn: sqlite3.Connection = Depends
         logger.error(f"Ошибка удаления дня отдыха: {e}")
         raise HTTPException(500, str(e))
 
-# ========== ИЗБРАННОЕ ==========
 @app.post("/favorites/{master_id}")
 def add_favorite(master_id: int, client_telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     conn.execute("INSERT OR IGNORE INTO favorites (client_telegram_id, master_id) VALUES (?,?)",
@@ -1350,7 +1424,6 @@ def get_favorites(client_telegram_id: str, conn: sqlite3.Connection = Depends(ge
     """, (client_telegram_id,)).fetchall()
     return [dict(f) for f in favorites]
 
-# ========== ЗАПИСИ ==========
 @app.get("/bookings/client/{telegram_id}")
 def get_client_bookings(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     bookings = conn.execute("""
@@ -1392,7 +1465,6 @@ def get_stats(telegram_id: str, conn: sqlite3.Connection = Depends(get_db)):
     rating = conn.execute("SELECT AVG(rating) FROM reviews WHERE master_id=?", (master["id"],)).fetchone()[0] or 0
     return {"completed": confirmed, "pending": pending, "revenue": revenue, "rating": round(rating, 1)}
 
-# ========== ЧАТ ==========
 @app.post("/chat/send")
 def send_message(data: MessageIn, conn: sqlite3.Connection = Depends(get_db)):
     booking = conn.execute("SELECT status FROM bookings WHERE id=?", (data.booking_id,)).fetchone()
@@ -1415,14 +1487,12 @@ def get_chat_by_token(token: str, conn: sqlite3.Connection = Depends(get_db)):
         raise HTTPException(404, "Chat not found")
     return dict(chat)
 
-# ========== ПОЛЬЗОВАТЕЛИ ==========
 @app.post("/user/register")
 def register_user(data: UserRegister, conn: sqlite3.Connection = Depends(get_db)):
     conn.execute("INSERT OR IGNORE INTO users (telegram_id) VALUES (?)", (data.telegram_id,))
     conn.commit()
     return {"status": "ok"}
 
-# ========== АДМИН-ПАНЕЛЬ ==========
 @app.post("/admin/add-master")
 def admin_add_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     telegram_id = data.get("telegram_id", "").strip()
@@ -1519,7 +1589,6 @@ def admin_get_stats(conn: sqlite3.Connection = Depends(get_db)):
     revenue = conn.execute("SELECT SUM(price) FROM bookings b JOIN services s ON b.service_id=s.id WHERE b.status='confirmed'").fetchone()[0] or 0
     return {"masters": masters, "total_bookings": bookings, "confirmed": confirmed, "pending": pending, "reviews": reviews, "revenue": revenue}
 
-# ========== ПРОВЕРКА ПЛАТЕЖА ==========
 @app.post("/bookings/{booking_id}/check-payment")
 def check_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
     try:
@@ -1605,7 +1674,6 @@ def check_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
         logger.error(f"❌ Ошибка проверки платежа: {e}")
         raise HTTPException(500, detail=str(e))
 
-# ========== ДОПОЛНИТЕЛЬНЫЕ ЭНДПОИНТЫ ==========
 @app.post("/masters")
 def create_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     telegram_id = data.get("telegram_id")
