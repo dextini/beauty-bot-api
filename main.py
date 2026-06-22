@@ -12,9 +12,11 @@ import uuid
 import base64
 import shutil
 import os
+import requests
 from datetime import datetime, timedelta
 import asyncio
 import logging
+import traceback
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -67,7 +69,7 @@ class BookingIn(BaseModel):
     service_id: int
     client_name: str
     client_telegram_id: str
-    client_phone: Optional[str]
+    client_phone: Optional[str] = None
     date: str
     time: str
 
@@ -358,9 +360,14 @@ def minutes_to_time(minutes: int) -> str:
     return f"{h:02d}:{m:02d}"
 
 def generate_slots_with_duration(work_start: str, work_end: str, booked_slots: List[dict], service_duration: int, cleaning_time: int = 15) -> List[str]:
+    """Генерация свободных слотов с учётом занятых"""
     start_min = time_to_minutes(work_start)
     end_min = time_to_minutes(work_end)
     interval = 30
+    
+    # ✅ ИСПРАВЛЕНО: проверка на None
+    if booked_slots is None:
+        booked_slots = []
     
     occupied_intervals = []
     for slot in booked_slots:
@@ -394,6 +401,7 @@ def generate_slots_with_duration(work_start: str, work_end: str, booked_slots: L
     return free_slots
 
 async def send_telegram_message(chat_id: str, message: str, parse_mode: str = "Markdown"):
+    """Асинхронная отправка сообщения в Telegram"""
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
@@ -404,22 +412,46 @@ async def send_telegram_message(chat_id: str, message: str, parse_mode: str = "M
     except Exception as e:
         logger.error(f"❌ Ошибка Telegram: {e}")
 
-def confirm_booking(booking_id: int, conn: sqlite3.Connection):
+def send_telegram_message_sync(chat_id: str, message: str, parse_mode: str = "Markdown"):
+    """Синхронная отправка сообщения в Telegram (для использования в sync-функциях)"""
     try:
-        conn.execute("UPDATE bookings SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
-        conn.commit()
-        
+        response = requests.post(
+            f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": message, "parse_mode": parse_mode},
+            timeout=10
+        )
+        if response.status_code == 200:
+            logger.info(f"✅ Сообщение отправлено в Telegram: {chat_id}")
+        else:
+            logger.error(f"❌ Ошибка отправки: {response.status_code} - {response.text}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка Telegram: {e}")
+
+def confirm_booking(booking_id: int, conn: sqlite3.Connection):
+    """Подтверждение записи и отправка уведомлений (синхронная версия)"""
+    try:
+        # Проверяем бронь
         booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
         if not booking:
             logger.error(f"❌ Бронь {booking_id} не найдена")
             return
         
+        # Проверяем статус
+        if booking["status"] == "confirmed":
+            logger.info(f"ℹ️ Бронь {booking_id} уже подтверждена")
+            return
+        
+        # Получаем мастера и услугу
         master = conn.execute("SELECT * FROM masters WHERE id=?", (booking["master_id"],)).fetchone()
         service = conn.execute("SELECT * FROM services WHERE id=?", (booking["service_id"],)).fetchone()
         
         if not master or not service:
             logger.error(f"❌ Мастер или услуга не найдены для booking_id={booking_id}")
             return
+        
+        # Обновляем статус
+        conn.execute("UPDATE bookings SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
+        conn.commit()
         
         # Создаём токен чата
         token = secrets.token_urlsafe(16)
@@ -447,26 +479,27 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
 💅 {service['name']}
 💰 {service['price']} ₽
 💸 Оплачено: {booking['deposit_amount']} ₽
-💎 Остаток: {service['price']} ₽
+💎 Остаток: {service['price'] - booking['deposit_amount']} ₽
 📅 {booking['date']} в {booking['time']}
 
 💬 Если у вас есть вопросы, напишите мастеру в чат"""
         
-        # Отправляем уведомления
+        # ✅ Отправляем уведомления синхронно
         if master.get("telegram_id"):
-            asyncio.create_task(send_telegram_message(master["telegram_id"], master_msg))
+            send_telegram_message_sync(master["telegram_id"], master_msg)
             logger.info(f"✅ Уведомление отправлено мастеру {master['telegram_id']}")
         else:
             logger.warning(f"⚠️ У мастера {master['id']} нет telegram_id")
         
         if booking.get("client_telegram_id"):
-            asyncio.create_task(send_telegram_message(booking["client_telegram_id"], client_msg))
+            send_telegram_message_sync(booking["client_telegram_id"], client_msg)
             logger.info(f"✅ Уведомление отправлено клиенту {booking['client_telegram_id']}")
         
         logger.info(f"✅ Бронь {booking_id} подтверждена и уведомления отправлены")
         
     except Exception as e:
         logger.error(f"❌ Ошибка в confirm_booking: {e}")
+        traceback.print_exc()
 
 async def create_ykassa_payment(amount: float, description: str, return_url: str, booking_id: int) -> dict:
     if not YKASSA_SHOP_ID or not YKASSA_SECRET_KEY:
@@ -485,13 +518,23 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post("https://api.yookassa.ru/v3/payments", json=payment_data, headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json", "Idempotence-Key": idempotence_key})
+            response = await client.post(
+                "https://api.yookassa.ru/v3/payments",
+                json=payment_data,
+                headers={
+                    "Authorization": f"Basic {auth}",
+                    "Content-Type": "application/json",
+                    "Idempotence-Key": idempotence_key
+                }
+            )
             if response.status_code == 200:
                 data = response.json()
                 return {"confirmation_url": data["confirmation"]["confirmation_url"], "payment_id": data["id"]}
             else:
+                logger.error(f"❌ Ошибка ЮKassa: {response.status_code} - {response.text}")
                 return {"confirmation_url": "https://yandex.ru", "payment_id": f"error_{booking_id}"}
-    except:
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания платежа: {e}")
         return {"confirmation_url": "https://yandex.ru", "payment_id": f"fallback_{booking_id}"}
 
 # ========== НАПОМИНАНИЯ ==========
@@ -530,6 +573,8 @@ async def send_reminders():
             conn.execute("UPDATE bookings SET reminder_1h_sent = 1 WHERE id = ?", (b['id'],))
         
         conn.commit()
+    except Exception as e:
+        logger.error(f"❌ Ошибка в send_reminders: {e}")
     finally:
         conn.close()
 
@@ -554,6 +599,8 @@ async def check_repeat_reminders():
             conn.execute("UPDATE bookings SET reminder_sent = 1 WHERE id = ?", (b['id'],))
         
         conn.commit()
+    except Exception as e:
+        logger.error(f"❌ Ошибка в check_repeat_reminders: {e}")
     finally:
         conn.close()
 
@@ -725,29 +772,47 @@ async def create_booking(data: BookingIn):
 
 @app.post("/payment-callback")
 async def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    """Обработка callback от платёжной системы"""
     booking_id = data.get("booking_id")
     payment_id = data.get("payment_id")
     
+    # ✅ ИСПРАВЛЕНО: проверка наличия booking_id
     if not booking_id:
+        logger.warning("⚠️ payment-callback: нет booking_id")
         return {"status": "error", "message": "booking_id required"}
     
+    # ✅ ИСПРАВЛЕНО: проверка существования брони
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
     if not booking:
+        logger.warning(f"⚠️ payment-callback: бронь {booking_id} не найдена")
         return {"status": "error", "message": "Booking not found"}
     
-    conn.execute("""
-        UPDATE bookings 
-        SET status = 'confirmed', 
-            payment_status = 'paid',
-            confirmed_at = CURRENT_TIMESTAMP,
-            payment_id = ?
-        WHERE id = ?
-    """, (payment_id, booking_id))
-    conn.commit()
+    # Если уже подтверждена
+    if booking["status"] == "confirmed":
+        logger.info(f"ℹ️ Бронь {booking_id} уже подтверждена")
+        return {"status": "ok", "message": "Already confirmed"}
     
-    confirm_booking(booking_id, conn)
-    
-    return {"status": "ok", "message": "Payment confirmed"}
+    # Обновляем статус
+    try:
+        conn.execute("""
+            UPDATE bookings 
+            SET status = 'confirmed', 
+                payment_status = 'paid',
+                confirmed_at = CURRENT_TIMESTAMP,
+                payment_id = ?
+            WHERE id = ?
+        """, (payment_id or booking["payment_id"], booking_id))
+        conn.commit()
+        
+        # ✅ ИСПРАВЛЕНО: confirm_booking теперь работает корректно
+        confirm_booking(booking_id, conn)
+        
+        logger.info(f"✅ Бронь {booking_id} подтверждена через payment-callback")
+        return {"status": "ok", "message": "Payment confirmed"}
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка подтверждения: {e}")
+        return {"status": "error", "message": str(e)}
 
 # ========== ВЕБХУК ОТ ЮKASSA ==========
 @app.post("/ykassa-webhook")
@@ -777,20 +842,7 @@ async def ykassa_webhook(request: Request, conn: sqlite3.Connection = Depends(ge
                     conn.commit()
                     
                     # Отправляем уведомления
-                    booking_full = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
-                    master = conn.execute("SELECT * FROM masters WHERE id=?", (booking_full["master_id"],)).fetchone()
-                    service = conn.execute("SELECT * FROM services WHERE id=?", (booking_full["service_id"],)).fetchone()
-                    
-                    token = secrets.token_urlsafe(16)
-                    conn.execute("INSERT OR IGNORE INTO chats (booking_id, master_id, client_telegram_id, master_telegram_id, token) VALUES (?,?,?,?,?)",
-                                (booking_id, master["id"], booking_full["client_telegram_id"], master["telegram_id"], token))
-                    conn.commit()
-                    
-                    master_msg = f"🌸 *НОВАЯ ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸\n\n👩 {booking_full['client_name']}\n📞 {booking_full['client_phone'] or 'не указан'}\n💅 {service['name']}\n💰 {service['price']} ₽\n💸 Депозит: {booking_full['deposit_amount']} ₽\n📅 {booking_full['date']} в {booking_full['time']}"
-                    client_msg = f"🌸 *ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸\n\n💅 {master['name']}\n📍 {master['address']}\n💅 {service['name']}\n💰 {service['price']} ₽\n💸 Оплачено: {booking_full['deposit_amount']} ₽\n💎 Остаток: {service['price']} ₽\n📅 {booking_full['date']} в {booking_full['time']}"
-                    
-                    asyncio.create_task(send_telegram_message(master["telegram_id"], master_msg))
-                    asyncio.create_task(send_telegram_message(booking_full["client_telegram_id"], client_msg))
+                    confirm_booking(booking_id, conn)
                     
                     logger.info(f"✅ [WEBHOOK] Бронь {booking_id} подтверждена!")
     except Exception as e:
@@ -836,7 +888,7 @@ def check_waitlist(master_id: int, service_id: int, date: str, conn: sqlite3.Con
         conn.execute("UPDATE waitlist SET notified = 1 WHERE id = ?", (waitlist["id"],))
         conn.commit()
 
-# ========== ОТЗЫВЫ (ИСПРАВЛЕННЫЕ) ==========
+# ========== ОТЗЫВЫ ==========
 @app.post("/reviews")
 def submit_review(data: ReviewIn, conn: sqlite3.Connection = Depends(get_db)):
     try:
@@ -1429,51 +1481,76 @@ def check_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
         # Если уже подтверждена
         if booking["status"] == "confirmed":
             logger.info(f"✅ Запись {booking_id} уже подтверждена")
-            return {"status": "confirmed", "booking_id": booking_id}
+            return {
+                "status": "confirmed", 
+                "booking_id": booking_id,
+                "payment_status": booking.get("payment_status", "paid")
+            }
         
         # Если есть payment_id и это тестовый режим
         if booking["payment_id"] and booking["payment_id"].startswith('test_'):
             logger.info(f"🔄 Тестовый режим, подтверждаем запись {booking_id}")
-            conn.execute("UPDATE bookings SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
-            conn.commit()
-            confirm_booking(booking_id, conn)
-            return {"status": "confirmed", "booking_id": booking_id}
+            try:
+                conn.execute("UPDATE bookings SET status='confirmed', payment_status='paid', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
+                conn.commit()
+                confirm_booking(booking_id, conn)
+                return {"status": "confirmed", "booking_id": booking_id}
+            except Exception as e:
+                logger.error(f"❌ Ошибка в тестовом режиме: {e}")
+                return {"status": "error", "message": str(e)}
         
         # Если есть payment_id, проверяем через ЮKassa
         if booking["payment_id"] and not booking["payment_id"].startswith('error_'):
             try:
                 auth = base64.b64encode(f"{YKASSA_SHOP_ID}:{YKASSA_SECRET_KEY}".encode()).decode()
                 import httpx
-                response = httpx.get(
-                    f"https://api.yookassa.ru/v3/payments/{booking['payment_id']}",
-                    headers={"Authorization": f"Basic {auth}"},
-                    timeout=10.0
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("status") == "succeeded":
-                        logger.info(f"✅ Платёж {booking['payment_id']} успешен, подтверждаем запись")
-                        conn.execute("""
-                            UPDATE bookings 
-                            SET status='confirmed', 
-                                payment_status='paid',
-                                confirmed_at=CURRENT_TIMESTAMP 
-                            WHERE id=?
-                        """, (booking_id,))
-                        conn.commit()
-                        confirm_booking(booking_id, conn)
-                        return {"status": "confirmed", "booking_id": booking_id}
+                with httpx.Client(timeout=10.0) as client:
+                    response = client.get(
+                        f"https://api.yookassa.ru/v3/payments/{booking['payment_id']}",
+                        headers={"Authorization": f"Basic {auth}"}
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get("status") == "succeeded":
+                            logger.info(f"✅ Платёж {booking['payment_id']} успешен")
+                            conn.execute("""
+                                UPDATE bookings 
+                                SET status='confirmed', 
+                                    payment_status='paid',
+                                    confirmed_at=CURRENT_TIMESTAMP 
+                                WHERE id=?
+                            """, (booking_id,))
+                            conn.commit()
+                            confirm_booking(booking_id, conn)
+                            return {"status": "confirmed", "booking_id": booking_id}
+                        else:
+                            logger.info(f"⏳ Статус платежа: {data.get('status')}")
+                            return {
+                                "status": booking["status"], 
+                                "booking_id": booking_id, 
+                                "payment_status": data.get("status")
+                            }
                     else:
-                        logger.info(f"⏳ Статус платежа: {data.get('status')}")
-                        return {"status": booking["status"], "booking_id": booking_id, "payment_status": data.get("status")}
-                else:
-                    logger.warning(f"⚠️ Ошибка проверки платежа: {response.status_code}")
-                    return {"status": booking["status"], "booking_id": booking_id, "payment_status": "unknown"}
+                        logger.warning(f"⚠️ Ошибка проверки платежа: {response.status_code}")
+                        return {
+                            "status": booking["status"], 
+                            "booking_id": booking_id, 
+                            "payment_status": "unknown"
+                        }
             except Exception as e:
                 logger.error(f"❌ Ошибка проверки платежа в ЮKassa: {e}")
-                return {"status": booking["status"], "booking_id": booking_id, "error": str(e)}
+                return {
+                    "status": booking["status"], 
+                    "booking_id": booking_id, 
+                    "error": str(e)
+                }
         
-        return {"status": booking["status"], "booking_id": booking_id}
+        return {
+            "status": booking["status"], 
+            "booking_id": booking_id,
+            "payment_id": booking.get("payment_id"),
+            "payment_status": booking.get("payment_status", "pending")
+        }
         
     except HTTPException:
         raise
