@@ -18,10 +18,15 @@ import asyncio
 import logging
 import traceback
 
-logging.basicConfig(level=logging.INFO)
+# === НАСТРОЙКА ЛОГГИРОВАНИЯ ===
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Beauty Bot API")
+# === ИНИЦИАЛИЗАЦИЯ FASTAPI ===
+app = FastAPI(title="Beauty Bot API", version="3.0.0")
 
 # === КОНФИГУРАЦИЯ ===
 YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1368786")
@@ -34,6 +39,7 @@ MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURS
 # === ПУТЬ К БАЗЕ ===
 DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
 PHOTO_DIR = os.path.join(os.getcwd(), "data", "photos")
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 os.makedirs(PHOTO_DIR, exist_ok=True)
 
 # ✅ МОНТИРУЕМ ПАПКУ PHOTOS ДЛЯ СТАТИЧЕСКОЙ ОТДАЧИ
@@ -58,7 +64,14 @@ async def add_cors_headers(request: Request, call_next):
 
 @app.options("/{path:path}")
 async def options_handler(path: str):
-    return JSONResponse(content={"message": "OK"}, headers={"Access-Control-Allow-Origin": "*"})
+    return JSONResponse(
+        content={"message": "OK"}, 
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*"
+        }
+    )
 
 DEFAULT_WORK_START = "09:00"
 DEFAULT_WORK_END = "20:00"
@@ -365,7 +378,6 @@ def generate_slots_with_duration(work_start: str, work_end: str, booked_slots: L
     end_min = time_to_minutes(work_end)
     interval = 30
     
-    # ✅ ИСПРАВЛЕНО: проверка на None
     if booked_slots is None:
         booked_slots = []
     
@@ -400,24 +412,36 @@ def generate_slots_with_duration(work_start: str, work_end: str, booked_slots: L
     
     return free_slots
 
+# ========== ФУНКЦИИ ДЛЯ ОТПРАВКИ В TELEGRAM ==========
 async def send_telegram_message(chat_id: str, message: str, parse_mode: str = "Markdown"):
-    """Асинхронная отправка сообщения в Telegram"""
+    """Асинхронная отправка сообщения в Telegram через Bot API"""
     try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
                 f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
-                json={"chat_id": chat_id, "text": message, "parse_mode": parse_mode}
+                json={
+                    "chat_id": chat_id, 
+                    "text": message, 
+                    "parse_mode": parse_mode
+                }
             )
-        logger.info(f"✅ Сообщение отправлено в Telegram: {chat_id}")
+            if response.status_code == 200:
+                logger.info(f"✅ Сообщение отправлено в Telegram: {chat_id}")
+            else:
+                logger.error(f"❌ Ошибка отправки: {response.status_code} - {response.text}")
     except Exception as e:
         logger.error(f"❌ Ошибка Telegram: {e}")
 
 def send_telegram_message_sync(chat_id: str, message: str, parse_mode: str = "Markdown"):
-    """Синхронная отправка сообщения в Telegram (для использования в sync-функциях)"""
+    """Синхронная отправка сообщения в Telegram"""
     try:
         response = requests.post(
             f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
-            json={"chat_id": chat_id, "text": message, "parse_mode": parse_mode},
+            json={
+                "chat_id": chat_id, 
+                "text": message, 
+                "parse_mode": parse_mode
+            },
             timeout=10
         )
         if response.status_code == 200:
@@ -427,8 +451,9 @@ def send_telegram_message_sync(chat_id: str, message: str, parse_mode: str = "Ma
     except Exception as e:
         logger.error(f"❌ Ошибка Telegram: {e}")
 
+# ========== ПОДТВЕРЖДЕНИЕ БРОНИ ==========
 def confirm_booking(booking_id: int, conn: sqlite3.Connection):
-    """Подтверждение записи и отправка уведомлений (синхронная версия)"""
+    """Подтверждение записи и отправка уведомлений"""
     try:
         # Проверяем бронь
         booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
@@ -484,25 +509,23 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
 
 💬 Если у вас есть вопросы, напишите мастеру в чат"""
         
-        # ✅ Отправляем уведомления синхронно
+        # Отправляем уведомления синхронно
         if master.get("telegram_id"):
             send_telegram_message_sync(master["telegram_id"], master_msg)
-            logger.info(f"✅ Уведомление отправлено мастеру {master['telegram_id']}")
-        else:
-            logger.warning(f"⚠️ У мастера {master['id']} нет telegram_id")
         
         if booking.get("client_telegram_id"):
             send_telegram_message_sync(booking["client_telegram_id"], client_msg)
-            logger.info(f"✅ Уведомление отправлено клиенту {booking['client_telegram_id']}")
         
-        logger.info(f"✅ Бронь {booking_id} подтверждена и уведомления отправлены")
+        logger.info(f"✅ Бронь {booking_id} подтверждена")
         
     except Exception as e:
         logger.error(f"❌ Ошибка в confirm_booking: {e}")
         traceback.print_exc()
 
+# ========== СОЗДАНИЕ ПЛАТЕЖА ==========
 async def create_ykassa_payment(amount: float, description: str, return_url: str, booking_id: int) -> dict:
     if not YKASSA_SHOP_ID or not YKASSA_SECRET_KEY:
+        logger.warning("⚠️ ЮKassa не настроена, используем тестовый режим")
         return {"confirmation_url": "https://yandex.ru", "payment_id": f"test_{booking_id}"}
     
     idempotence_key = str(uuid.uuid4())
@@ -529,7 +552,11 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
             )
             if response.status_code == 200:
                 data = response.json()
-                return {"confirmation_url": data["confirmation"]["confirmation_url"], "payment_id": data["id"]}
+                logger.info(f"✅ Платёж создан: {data['id']}")
+                return {
+                    "confirmation_url": data["confirmation"]["confirmation_url"], 
+                    "payment_id": data["id"]
+                }
             else:
                 logger.error(f"❌ Ошибка ЮKassa: {response.status_code} - {response.text}")
                 return {"confirmation_url": "https://yandex.ru", "payment_id": f"error_{booking_id}"}
@@ -657,10 +684,8 @@ def get_master_by_id(master_id: int, conn=Depends(get_db)):
     d["reviews_count"] = reviews_count
     return d
 
-# ========== ПОРТФОЛИО МАСТЕРА (ДЛЯ КЛИЕНТОВ) ==========
 @app.get("/masters/{master_id}/portfolio")
 def get_master_portfolio(master_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    """Получить портфолио мастера по его ID (для клиентов)"""
     try:
         portfolio = conn.execute("""
             SELECT id, photo_url, description, created_at
@@ -751,6 +776,7 @@ async def create_booking(data: BookingIn):
         conn.execute("UPDATE bookings SET payment_id=? WHERE id=?", (payment["payment_id"], booking_id))
         conn.commit()
         
+        # Отправляем уведомление мастеру
         master_msg = f"💳 *НОВАЯ ЗАЯВКА* 💳\n\n👩 {data.client_name}\n📞 {data.client_phone or 'не указан'}\n💅 {service['name']}\n💰 {service['price']} ₽\n💸 Депозит: {deposit_amount} ₽\n📅 {data.date} в {data.time}"
         asyncio.create_task(send_telegram_message(master["telegram_id"], master_msg))
         
@@ -771,28 +797,24 @@ async def create_booking(data: BookingIn):
         conn.close()
 
 @app.post("/payment-callback")
-async def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     """Обработка callback от платёжной системы"""
     booking_id = data.get("booking_id")
     payment_id = data.get("payment_id")
     
-    # ✅ ИСПРАВЛЕНО: проверка наличия booking_id
     if not booking_id:
         logger.warning("⚠️ payment-callback: нет booking_id")
         return {"status": "error", "message": "booking_id required"}
     
-    # ✅ ИСПРАВЛЕНО: проверка существования брони
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
     if not booking:
         logger.warning(f"⚠️ payment-callback: бронь {booking_id} не найдена")
         return {"status": "error", "message": "Booking not found"}
     
-    # Если уже подтверждена
     if booking["status"] == "confirmed":
         logger.info(f"ℹ️ Бронь {booking_id} уже подтверждена")
         return {"status": "ok", "message": "Already confirmed"}
     
-    # Обновляем статус
     try:
         conn.execute("""
             UPDATE bookings 
@@ -804,7 +826,6 @@ async def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db
         """, (payment_id or booking["payment_id"], booking_id))
         conn.commit()
         
-        # ✅ ИСПРАВЛЕНО: confirm_booking теперь работает корректно
         confirm_booking(booking_id, conn)
         
         logger.info(f"✅ Бронь {booking_id} подтверждена через payment-callback")
@@ -814,7 +835,6 @@ async def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db
         logger.error(f"❌ Ошибка подтверждения: {e}")
         return {"status": "error", "message": str(e)}
 
-# ========== ВЕБХУК ОТ ЮKASSA ==========
 @app.post("/ykassa-webhook")
 async def ykassa_webhook(request: Request, conn: sqlite3.Connection = Depends(get_db)):
     try:
@@ -841,7 +861,6 @@ async def ykassa_webhook(request: Request, conn: sqlite3.Connection = Depends(ge
                     conn.execute("UPDATE bookings SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
                     conn.commit()
                     
-                    # Отправляем уведомления
                     confirm_booking(booking_id, conn)
                     
                     logger.info(f"✅ [WEBHOOK] Бронь {booking_id} подтверждена!")
@@ -867,7 +886,6 @@ def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection
     
     if status == "cancelled":
         booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
-        master = conn.execute("SELECT * FROM masters WHERE id=?", (booking["master_id"],)).fetchone()
         service = conn.execute("SELECT * FROM services WHERE id=?", (booking["service_id"],)).fetchone()
         
         client_msg = f"❌ *Запись отменена*\n\n📅 {booking['date']} в {booking['time']}\n💅 {service['name']}\n\n💸 Депозит вернётся в течение 3-7 дней."
@@ -894,33 +912,27 @@ def submit_review(data: ReviewIn, conn: sqlite3.Connection = Depends(get_db)):
     try:
         logger.info(f"📝 Получен отзыв: {data}")
         
-        # Проверяем, существует ли запись
         booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (data.booking_id,)).fetchone()
         if not booking:
             raise HTTPException(404, "Запись не найдена")
         
-        # Проверяем, не оставлял ли клиент уже отзыв
         existing = conn.execute("SELECT id FROM reviews WHERE booking_id = ?", (data.booking_id,)).fetchone()
         if existing:
             raise HTTPException(400, "Отзыв уже оставлен")
         
-        # Проверяем статус записи (должна быть confirmed)
         if booking["status"] != "confirmed":
             raise HTTPException(400, "Отзыв можно оставить только после подтверждённой записи")
         
-        # Проверяем мастера
         master = conn.execute("SELECT id FROM masters WHERE id = ?", (data.master_id,)).fetchone()
         if not master:
             raise HTTPException(404, "Мастер не найден")
         
-        # Вставляем отзыв
         conn.execute("""
             INSERT INTO reviews (master_id, booking_id, client_name, rating, comment)
             VALUES (?, ?, ?, ?, ?)
         """, (data.master_id, data.booking_id, data.client_name, data.rating, data.comment))
         conn.commit()
         
-        # Обновляем рейтинг мастера
         conn.execute("""
             UPDATE masters SET rating = (
                 SELECT AVG(rating) FROM reviews WHERE master_id = ?
@@ -928,7 +940,6 @@ def submit_review(data: ReviewIn, conn: sqlite3.Connection = Depends(get_db)):
         """, (data.master_id, data.master_id))
         conn.commit()
         
-        # Отмечаем, что отзыв уже оставлен
         conn.execute("UPDATE bookings SET review_given = 1 WHERE id = ?", (data.booking_id,))
         conn.commit()
         
@@ -1386,10 +1397,8 @@ def admin_add_master(data: dict, conn: sqlite3.Connection = Depends(get_db)):
     master_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     return {"status": "ok", "master_id": master_id, "telegram_id": telegram_id}
 
-# ========== АДМИН-ПАНЕЛЬ (РАСШИРЕННАЯ) ==========
 @app.post("/admin/add-master-full")
 def admin_add_master_full(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Добавление мастера со всеми данными (Имя, Адрес, Телефон, Instagram, Описание)"""
     try:
         name = data.get("name", "").strip()
         address = data.get("address", "").strip()
@@ -1404,12 +1413,10 @@ def admin_add_master_full(data: dict, conn: sqlite3.Connection = Depends(get_db)
         if not telegram_id:
             raise HTTPException(400, "Telegram ID обязателен")
         
-        # Проверяем, существует ли мастер с таким Telegram ID
         existing = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
         if existing:
             raise HTTPException(400, f"Мастер с Telegram ID {telegram_id} уже существует")
         
-        # Добавляем мастера (РОСТОВ-НА-ДОНУ ПО УМОЛЧАНИЮ)
         conn.execute("""
             INSERT INTO masters (name, address, phone, instagram, description, telegram_id, lat, lon, icon, work_start, work_end)
             VALUES (?, ?, ?, ?, ?, ?, 47.222078, 39.720358, '💅', '09:00', '20:00')
@@ -1470,7 +1477,6 @@ def admin_get_stats(conn: sqlite3.Connection = Depends(get_db)):
 # ========== ПРОВЕРКА ПЛАТЕЖА ==========
 @app.post("/bookings/{booking_id}/check-payment")
 def check_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    """Ручная проверка статуса платежа"""
     try:
         logger.info(f"🔍 Проверка платежа для booking_id={booking_id}")
         
@@ -1478,7 +1484,6 @@ def check_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
         if not booking:
             raise HTTPException(404, "Booking not found")
         
-        # Если уже подтверждена
         if booking["status"] == "confirmed":
             logger.info(f"✅ Запись {booking_id} уже подтверждена")
             return {
@@ -1487,7 +1492,6 @@ def check_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
                 "payment_status": booking.get("payment_status", "paid")
             }
         
-        # Если есть payment_id и это тестовый режим
         if booking["payment_id"] and booking["payment_id"].startswith('test_'):
             logger.info(f"🔄 Тестовый режим, подтверждаем запись {booking_id}")
             try:
@@ -1499,11 +1503,9 @@ def check_payment(booking_id: int, conn: sqlite3.Connection = Depends(get_db)):
                 logger.error(f"❌ Ошибка в тестовом режиме: {e}")
                 return {"status": "error", "message": str(e)}
         
-        # Если есть payment_id, проверяем через ЮKassa
         if booking["payment_id"] and not booking["payment_id"].startswith('error_'):
             try:
                 auth = base64.b64encode(f"{YKASSA_SHOP_ID}:{YKASSA_SECRET_KEY}".encode()).decode()
-                import httpx
                 with httpx.Client(timeout=10.0) as client:
                     response = client.get(
                         f"https://api.yookassa.ru/v3/payments/{booking['payment_id']}",
@@ -1774,12 +1776,19 @@ def health_check():
 
 @app.get("/")
 def root():
-    return {"status": "Beauty Bot API running 🌸", "version": "3.0.0"}
+    return {
+        "status": "Beauty Bot API running 🌸", 
+        "version": "3.0.0",
+        "endpoints": {
+            "masters": "/masters",
+            "bookings": "/bookings",
+            "admin": "/admin/masters",
+            "health": "/health"
+        }
+    }
 
-# ========== ЭНДПОИНТ ДЛЯ РУЧНОЙ ОТДАЧИ ФОТО ==========
 @app.get("/photos/{filename}")
 async def get_photo(filename: str):
-    """Ручной эндпоинт для отдачи фото"""
     file_path = os.path.join(PHOTO_DIR, filename)
     if os.path.exists(file_path):
         return FileResponse(file_path)
@@ -1787,4 +1796,10 @@ async def get_photo(filename: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )
