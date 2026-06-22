@@ -18,14 +18,12 @@ import asyncio
 import logging
 import traceback
 
-# === НАСТРОЙКА ЛОГГИРОВАНИЯ ===
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# === ИНИЦИАЛИЗАЦИЯ FASTAPI ===
 app = FastAPI(title="Beauty Bot API", version="3.0.0")
 
 # === КОНФИГУРАЦИЯ ===
@@ -42,7 +40,6 @@ PHOTO_DIR = os.path.join(os.getcwd(), "data", "photos")
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 os.makedirs(PHOTO_DIR, exist_ok=True)
 
-# ✅ МОНТИРУЕМ ПАПКУ PHOTOS ДЛЯ СТАТИЧЕСКОЙ ОТДАЧИ
 app.mount("/photos", StaticFiles(directory=PHOTO_DIR), name="photos")
 
 # === CORS ===
@@ -133,7 +130,6 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Таблица мастеров
     c.execute("""CREATE TABLE IF NOT EXISTS masters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT DEFAULT '',
@@ -152,7 +148,6 @@ def init_db():
         avatar TEXT
     )""")
     
-    # Таблица услуг
     c.execute("""CREATE TABLE IF NOT EXISTS services (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -161,7 +156,6 @@ def init_db():
         duration_min INTEGER
     )""")
     
-    # Таблица записей
     c.execute("""CREATE TABLE IF NOT EXISTS bookings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -186,7 +180,6 @@ def init_db():
         review_given INTEGER DEFAULT 0
     )""")
     
-    # Таблица выходных дней
     c.execute("""CREATE TABLE IF NOT EXISTS days_off (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -194,7 +187,6 @@ def init_db():
         UNIQUE(master_id, date)
     )""")
     
-    # Таблица чатов
     c.execute("""CREATE TABLE IF NOT EXISTS chats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         booking_id INTEGER UNIQUE,
@@ -204,7 +196,6 @@ def init_db():
         token TEXT UNIQUE
     )""")
     
-    # Таблица сообщений чата
     c.execute("""CREATE TABLE IF NOT EXISTS chat_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         booking_id INTEGER,
@@ -215,14 +206,12 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Таблица пользователей
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         telegram_id TEXT UNIQUE,
         registered_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Таблица быстрых ответов
     c.execute("""CREATE TABLE IF NOT EXISTS quick_replies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -230,7 +219,6 @@ def init_db():
         message TEXT
     )""")
     
-    # Таблица портфолио
     c.execute("""CREATE TABLE IF NOT EXISTS portfolio (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -239,7 +227,6 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Таблица портфолио "До/После"
     c.execute("""CREATE TABLE IF NOT EXISTS master_before_after (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -249,7 +236,6 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Таблица избранного
     c.execute("""CREATE TABLE IF NOT EXISTS favorites (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         client_telegram_id TEXT,
@@ -257,7 +243,6 @@ def init_db():
         UNIQUE(client_telegram_id, master_id)
     )""")
     
-    # Таблица чёрного списка
     c.execute("""CREATE TABLE IF NOT EXISTS blacklist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -266,7 +251,6 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Таблица промокодов
     c.execute("""CREATE TABLE IF NOT EXISTS promocodes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT UNIQUE,
@@ -277,7 +261,6 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     
-    # Таблица отзывов
     c.execute("""CREATE TABLE IF NOT EXISTS reviews (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -290,7 +273,6 @@ def init_db():
         FOREIGN KEY (booking_id) REFERENCES bookings(id)
     )""")
     
-    # Таблица листа ожидания
     c.execute("""CREATE TABLE IF NOT EXISTS waitlist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -305,7 +287,6 @@ def init_db():
         FOREIGN KEY (service_id) REFERENCES services(id)
     )""")
     
-    # Добавляем недостающие колонки
     for col in ['reminder_24h_sent', 'reminder_1h_sent', 'reminder_sent']:
         try:
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col} INTEGER DEFAULT 0")
@@ -326,7 +307,6 @@ def init_db():
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col} INTEGER DEFAULT 0")
         except: pass
     
-    # Добавляем тестового мастера если БД пуста
     c.execute("SELECT COUNT(*) FROM masters")
     count = c.fetchone()[0]
     if count == 0:
@@ -340,7 +320,6 @@ def init_db():
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Маникюр с покрытием гель-лак", 2000, 90))
         c.execute("INSERT INTO services (master_id, name, price, duration_min) VALUES (?,?,?,?)", (master_id, "Педикюр", 2500, 120))
         
-        # ✅ Добавляем тестовое портфолио
         c.execute("INSERT INTO portfolio (master_id, photo_url, description) VALUES (?, ?, ?)", 
                   (master_id, "/photos/test1.jpg", "Маникюр с дизайном 🌸"))
         c.execute("INSERT INTO portfolio (master_id, photo_url, description) VALUES (?, ?, ?)", 
@@ -373,7 +352,6 @@ def minutes_to_time(minutes: int) -> str:
     return f"{h:02d}:{m:02d}"
 
 def generate_slots_with_duration(work_start: str, work_end: str, booked_slots: List[dict], service_duration: int, cleaning_time: int = 15) -> List[str]:
-    """Генерация свободных слотов с учётом занятых"""
     start_min = time_to_minutes(work_start)
     end_min = time_to_minutes(work_end)
     interval = 30
@@ -414,7 +392,7 @@ def generate_slots_with_duration(work_start: str, work_end: str, booked_slots: L
 
 # ========== ФУНКЦИИ ДЛЯ ОТПРАВКИ В TELEGRAM ==========
 async def send_telegram_message(chat_id: str, message: str, parse_mode: str = "Markdown"):
-    """Асинхронная отправка сообщения в Telegram через Bot API"""
+    """Асинхронная отправка сообщения в Telegram"""
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -451,22 +429,57 @@ def send_telegram_message_sync(chat_id: str, message: str, parse_mode: str = "Ma
     except Exception as e:
         logger.error(f"❌ Ошибка Telegram: {e}")
 
-# ========== ПОДТВЕРЖДЕНИЕ БРОНИ ==========
-def confirm_booking(booking_id: int, conn: sqlite3.Connection):
-    """Подтверждение записи и отправка уведомлений"""
+# ========== НОВАЯ ФУНКЦИЯ: ОТПРАВКА В ГЛАВНЫЙ БОТ ==========
+async def send_notification_to_bot(message: str):
+    """Отправка уведомления в главный бот (в чат с ботом)"""
     try:
-        # Проверяем бронь
+        bot_id = MASTER_BOT_TOKEN.split(":")[0]
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": bot_id,
+                    "text": message,
+                    "parse_mode": "Markdown"
+                }
+            )
+        logger.info(f"✅ Уведомление отправлено в бот (ID: {bot_id})")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки в бот: {e}")
+
+def send_notification_to_bot_sync(message: str):
+    """Синхронная отправка уведомления в главный бот"""
+    try:
+        bot_id = MASTER_BOT_TOKEN.split(":")[0]
+        response = requests.post(
+            f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": bot_id,
+                "text": message,
+                "parse_mode": "Markdown"
+            },
+            timeout=10
+        )
+        if response.status_code == 200:
+            logger.info(f"✅ Уведомление отправлено в бот (ID: {bot_id})")
+        else:
+            logger.error(f"❌ Ошибка отправки: {response.status_code}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки в бот: {e}")
+
+# ========== ПОДТВЕРЖДЕНИЕ БРОНИ (С УВЕДОМЛЕНИЕМ В БОТ) ==========
+def confirm_booking(booking_id: int, conn: sqlite3.Connection):
+    """Подтверждение записи и отправка уведомлений (включая главный бот)"""
+    try:
         booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
         if not booking:
             logger.error(f"❌ Бронь {booking_id} не найдена")
             return
         
-        # Проверяем статус
         if booking["status"] == "confirmed":
             logger.info(f"ℹ️ Бронь {booking_id} уже подтверждена")
             return
         
-        # Получаем мастера и услугу
         master = conn.execute("SELECT * FROM masters WHERE id=?", (booking["master_id"],)).fetchone()
         service = conn.execute("SELECT * FROM services WHERE id=?", (booking["service_id"],)).fetchone()
         
@@ -474,17 +487,15 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
             logger.error(f"❌ Мастер или услуга не найдены для booking_id={booking_id}")
             return
         
-        # Обновляем статус
         conn.execute("UPDATE bookings SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
         conn.commit()
         
-        # Создаём токен чата
         token = secrets.token_urlsafe(16)
         conn.execute("INSERT OR IGNORE INTO chats (booking_id, master_id, client_telegram_id, master_telegram_id, token) VALUES (?,?,?,?,?)",
                     (booking_id, master["id"], booking["client_telegram_id"], master["telegram_id"], token))
         conn.commit()
         
-        # Сообщение мастеру
+        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ
         master_msg = f"""🌸 *НОВАЯ ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸
 
 👩 {booking['client_name']}
@@ -496,7 +507,7 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
 
 📌 Подтвердите запись в кабинете мастера"""
         
-        # Сообщение клиенту
+        # ✅ УВЕДОМЛЕНИЕ КЛИЕНТУ
         client_msg = f"""🌸 *ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸
 
 💅 {master['name']}
@@ -508,15 +519,33 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
 📅 {booking['date']} в {booking['time']}
 
 💬 Если у вас есть вопросы, напишите мастеру в чат"""
-        
-        # Отправляем уведомления синхронно
+
+        # ✅ НОВОЕ: УВЕДОМЛЕНИЕ В ГЛАВНЫЙ БОТ
+        bot_msg = f"""🌸 *НОВАЯ ОПЛАЧЕННАЯ ЗАПИСЬ!* 🌸
+
+👤 Клиент: {booking['client_name']}
+📞 Телефон: {booking['client_phone'] or 'не указан'}
+💅 Услуга: {service['name']}
+💰 Стоимость: {service['price']} ₽
+💸 Депозит: {booking['deposit_amount']} ₽
+📅 Дата: {booking['date']}
+⏰ Время: {booking['time']}
+👩‍💼 Мастер: {master['name']}
+🆔 ID записи: {booking_id}
+
+📌 Статус: ПОДТВЕРЖДЕНА ✅"""
+
+        # Отправляем уведомления
         if master.get("telegram_id"):
             send_telegram_message_sync(master["telegram_id"], master_msg)
         
         if booking.get("client_telegram_id"):
             send_telegram_message_sync(booking["client_telegram_id"], client_msg)
         
-        logger.info(f"✅ Бронь {booking_id} подтверждена")
+        # ✅ ОТПРАВЛЯЕМ В ГЛАВНЫЙ БОТ
+        send_notification_to_bot_sync(bot_msg)
+        
+        logger.info(f"✅ Бронь {booking_id} подтверждена, уведомления отправлены")
         
     except Exception as e:
         logger.error(f"❌ Ошибка в confirm_booking: {e}")
@@ -737,6 +766,7 @@ def get_slots(master_id: int, date: str, service_id: int, conn=Depends(get_db)):
     
     return {"date": date, "slots": free_slots, "day_off": False}
 
+# ========== СОЗДАНИЕ БРОНИ (С УВЕДОМЛЕНИЕМ В БОТ) ==========
 @app.post("/bookings")
 async def create_booking(data: BookingIn):
     conn = get_db()
@@ -776,9 +806,25 @@ async def create_booking(data: BookingIn):
         conn.execute("UPDATE bookings SET payment_id=? WHERE id=?", (payment["payment_id"], booking_id))
         conn.commit()
         
-        # Отправляем уведомление мастеру
+        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ
         master_msg = f"💳 *НОВАЯ ЗАЯВКА* 💳\n\n👩 {data.client_name}\n📞 {data.client_phone or 'не указан'}\n💅 {service['name']}\n💰 {service['price']} ₽\n💸 Депозит: {deposit_amount} ₽\n📅 {data.date} в {data.time}"
         asyncio.create_task(send_telegram_message(master["telegram_id"], master_msg))
+        
+        # ✅ НОВОЕ: УВЕДОМЛЕНИЕ В ГЛАВНЫЙ БОТ О НОВОЙ ЗАЯВКЕ
+        bot_msg = f"""💳 *НОВАЯ ЗАЯВКА НА ЗАПИСЬ!* 💳
+
+👤 Клиент: {data.client_name}
+📞 Телефон: {data.client_phone or 'не указан'}
+💅 Услуга: {service['name']}
+💰 Стоимость: {service['price']} ₽
+💸 Депозит: {deposit_amount} ₽
+📅 Дата: {data.date}
+⏰ Время: {data.time}
+👩‍💼 Мастер: {master['name']}
+🆔 ID записи: {booking_id}
+
+📌 Статус: ОЖИДАЕТ ОПЛАТЫ ⏳"""
+        asyncio.create_task(send_telegram_message(MASTER_BOT_TOKEN.split(":")[0], bot_msg))
         
         return {
             "booking_id": booking_id,
@@ -798,7 +844,6 @@ async def create_booking(data: BookingIn):
 
 @app.post("/payment-callback")
 def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    """Обработка callback от платёжной системы"""
     booking_id = data.get("booking_id")
     payment_id = data.get("payment_id")
     
