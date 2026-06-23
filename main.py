@@ -427,7 +427,7 @@ def send_telegram_message_sync(chat_id: str, message: str, parse_mode: str = "Ma
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
 
-# ========== АВТОМАТИЧЕСКИЕ УВЕДОМЛЕНИЯ ==========
+# ========== АВТОМАТИЧЕСКИЕ УВЕДОМЛЕНИЯ ВСЕМ МАСТЕРАМ ИЗ БД ==========
 def get_all_masters_telegram_ids(conn):
     """Автоматически получает Telegram ID всех мастеров из БД"""
     try:
@@ -436,7 +436,7 @@ def get_all_masters_telegram_ids(conn):
         ).fetchall()
         return [dict(m) for m in masters]
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
+        logger.error(f"❌ Ошибка получения мастеров: {e}")
         return []
 
 def send_notification_to_all_masters(message: str, conn):
@@ -676,10 +676,23 @@ async def run_daily_tasks():
         await check_repeat_reminders()
         await asyncio.sleep(86400)
 
-@app.on_event("startup")
-async def start_background_tasks():
+# ========== ЗАПУСК ФОНОВЫХ ЗАДАЧ (БЕЗ DEPRECATION WARNING) ==========
+# Используем lifespan вместо on_event
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("🚀 Запуск фоновых задач...")
     asyncio.create_task(run_background_tasks())
     asyncio.create_task(run_daily_tasks())
+    logger.info("✅ Фоновые задачи запущены")
+    yield
+    # Shutdown (опционально)
+    logger.info("🛑 Остановка фоновых задач...")
+
+# Пересоздаём app с lifespan
+app = FastAPI(title="Beauty Bot API", version="3.0.0", lifespan=lifespan)
 
 # ========== ОСНОВНЫЕ ЭНДПОИНТЫ ==========
 
@@ -1717,6 +1730,13 @@ async def get_photo(filename: str):
         return FileResponse(file_path)
     raise HTTPException(404, "Photo not found")
 
+# ========== ЗАПУСК (БЕЗ RELOAD ДЛЯ RAILWAY) ==========
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True, log_level="info")
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        log_level="info"
+        # reload=True - НЕ ИСПОЛЬЗУЙ НА ПРОДУКШЕНЕ!
+    )
