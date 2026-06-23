@@ -423,11 +423,11 @@ def send_telegram_message_sync(chat_id: str, message: str, parse_mode: str = "Ma
         if response.status_code == 200:
             logger.info(f"✅ Сообщение отправлено в Telegram: {chat_id}")
         else:
-            logger.error(f"❌ Ошибка: {response.status_code}")
+            logger.error(f"❌ Ошибка: {response.status_code} - {response.text}")
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
 
-# ========== АВТОМАТИЧЕСКИЕ УВЕДОМЛЕНИЯ ВСЕМ МАСТЕРАМ ИЗ БД ==========
+# ========== АВТОМАТИЧЕСКИЕ УВЕДОМЛЕНИЯ ==========
 def get_all_masters_telegram_ids(conn):
     """Автоматически получает Telegram ID всех мастеров из БД"""
     try:
@@ -436,7 +436,7 @@ def get_all_masters_telegram_ids(conn):
         ).fetchall()
         return [dict(m) for m in masters]
     except Exception as e:
-        logger.error(f"❌ Ошибка получения мастеров: {e}")
+        logger.error(f"❌ Ошибка: {e}")
         return []
 
 def send_notification_to_all_masters(message: str, conn):
@@ -461,7 +461,7 @@ def send_notification_to_all_masters(message: str, conn):
         return 0
 
 def send_notification_to_admin_sync(message: str):
-    """Отправка уведомления админу"""
+    """Отправка уведомления админу (тебе)"""
     try:
         response = requests.post(
             f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
@@ -472,12 +472,13 @@ def send_notification_to_admin_sync(message: str):
             logger.info(f"✅ Уведомление отправлено админу {ADMIN_CHAT_ID}")
             return True
         else:
-            logger.error(f"❌ Ошибка: {response.status_code}")
+            logger.error(f"❌ Ошибка: {response.status_code} - {response.text}")
             return False
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
         return False
 
+# ========== СОЗДАНИЕ ПЛАТЕЖА ==========
 async def create_ykassa_payment(amount: float, description: str, return_url: str, booking_id: int) -> dict:
     if not YKASSA_SHOP_ID or not YKASSA_SECRET_KEY:
         logger.warning("⚠️ ЮKassa не настроена, тестовый режим")
@@ -511,9 +512,10 @@ async def create_ykassa_payment(amount: float, description: str, return_url: str
             else:
                 return {"confirmation_url": "https://yandex.ru", "payment_id": f"error_{booking_id}"}
     except Exception as e:
-        logger.error(f"❌ Ошибка создания платежа: {e}")
+        logger.error(f"❌ Ошибка: {e}")
         return {"confirmation_url": "https://yandex.ru", "payment_id": f"fallback_{booking_id}"}
 
+# ========== ПОДТВЕРЖДЕНИЕ БРОНИ ==========
 def confirm_booking(booking_id: int, conn: sqlite3.Connection):
     try:
         booking = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
@@ -540,6 +542,7 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
                     (booking_id, master["id"], booking["client_telegram_id"], master["telegram_id"], token))
         conn.commit()
         
+        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ
         master_msg = f"""🌸 *НОВАЯ ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸
 
 👩 {booking['client_name']}
@@ -552,6 +555,7 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
         if master.get("telegram_id"):
             send_telegram_message_sync(master["telegram_id"], master_msg)
         
+        # ✅ УВЕДОМЛЕНИЕ КЛИЕНТУ
         client_msg = f"""🌸 *ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸
 
 💅 {master['name']}
@@ -564,6 +568,7 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
         if booking.get("client_telegram_id"):
             send_telegram_message_sync(booking["client_telegram_id"], client_msg)
         
+        # ✅ АВТОМАТИЧЕСКОЕ УВЕДОМЛЕНИЕ ВСЕМ МАСТЕРАМ
         all_masters_msg = f"""🌸 *НОВАЯ ОПЛАЧЕННАЯ ЗАПИСЬ!* 🌸
 
 👤 Клиент: {booking['client_name']}
@@ -576,6 +581,7 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
         
         send_notification_to_all_masters(all_masters_msg, conn)
         
+        # ✅ УВЕДОМЛЕНИЕ АДМИНУ (ТЕБЕ)
         admin_msg = f"""🌸 *НОВАЯ ОПЛАЧЕННАЯ ЗАПИСЬ!* 🌸
 
 👤 Клиент: {booking['client_name']}
@@ -724,7 +730,7 @@ def get_master_portfolio(master_id: int, conn: sqlite3.Connection = Depends(get_
         """, (master_id,)).fetchall()
         return [dict(p) for p in portfolio]
     except Exception as e:
-        logger.error(f"Ошибка получения портфолио: {e}")
+        logger.error(f"Ошибка: {e}")
         return []
 
 @app.get("/masters/{master_id}/slots")
@@ -826,7 +832,7 @@ async def create_booking(data: BookingIn):
         
         send_notification_to_all_masters(all_masters_msg, conn)
         
-        # ✅ УВЕДОМЛЕНИЕ АДМИНУ
+        # ✅ УВЕДОМЛЕНИЕ АДМИНУ (ТЕБЕ)
         admin_msg = f"""💳 *НОВАЯ ЗАЯВКА НА ЗАПИСЬ!* 💳
 
 👤 Клиент: {data.client_name}
@@ -1137,7 +1143,7 @@ async def upload_avatar(telegram_id: str, file: UploadFile = File(...)):
         
         return {"avatar_url": avatar_url, "status": "ok"}
     except Exception as e:
-        logger.error(f"Ошибка загрузки аватара: {e}")
+        logger.error(f"Ошибка: {e}")
         raise HTTPException(500, str(e))
     finally:
         conn.close()
@@ -1190,7 +1196,7 @@ async def upload_portfolio(telegram_id: str, file: UploadFile = File(...), descr
         
         return {"photo_url": photo_url, "status": "ok"}
     except Exception as e:
-        logger.error(f"Ошибка загрузки портфолио: {e}")
+        logger.error(f"Ошибка: {e}")
         raise HTTPException(500, str(e))
     finally:
         conn.close()
@@ -1695,23 +1701,6 @@ async def confirm_booking_by_id(booking_id: int):
         return {"status": "confirmed", "booking_id": booking_id}
     finally:
         conn.close()
-
-@app.get("/test-notification")
-async def test_notification():
-    msg = f"🔔 *ТЕСТ!* 🔔\n\nПривет! Это тестовое уведомление от бота @pinkspotvelur_bot\n\nТвой ID: {ADMIN_CHAT_ID}\nВремя: {datetime.now().strftime('%H:%M:%S')}"
-    result = send_notification_to_admin_sync(msg)
-    if result:
-        return {"status": "ok", "message": f"Уведомление отправлено на ID {ADMIN_CHAT_ID}"}
-    else:
-        return {"status": "error", "message": "Не удалось отправить уведомление"}
-
-@app.get("/test-all-masters")
-async def test_all_masters():
-    conn = get_db()
-    msg = "🔔 *ТЕСТОВОЕ УВЕДОМЛЕНИЕ ВСЕМ МАСТЕРАМ!* 🔔\n\nЭто тестовая рассылка всем мастерам из БД."
-    count = send_notification_to_all_masters(msg, conn)
-    conn.close()
-    return {"status": "ok", "message": f"Уведомления отправлены {count} мастерам"}
 
 @app.get("/health")
 def health_check():
