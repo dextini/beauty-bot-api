@@ -17,14 +17,13 @@ from datetime import datetime, timedelta
 import asyncio
 import logging
 import traceback
+from contextlib import asynccontextmanager
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-app = FastAPI(title="Beauty Bot API", version="3.0.0")
 
 # === КОНФИГУРАЦИЯ ===
 YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1368786")
@@ -42,6 +41,18 @@ DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
 PHOTO_DIR = os.path.join(os.getcwd(), "data", "photos")
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 os.makedirs(PHOTO_DIR, exist_ok=True)
+
+# === LIFESPAN ===
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("🚀 Запуск фоновых задач...")
+    asyncio.create_task(run_background_tasks())
+    asyncio.create_task(run_daily_tasks())
+    logger.info("✅ Фоновые задачи запущены")
+    yield
+    logger.info("🛑 Остановка фоновых задач...")
+
+app = FastAPI(title="Beauty Bot API", version="3.0.0", lifespan=lifespan)
 
 app.mount("/photos", StaticFiles(directory=PHOTO_DIR), name="photos")
 
@@ -676,24 +687,6 @@ async def run_daily_tasks():
         await check_repeat_reminders()
         await asyncio.sleep(86400)
 
-# ========== ЗАПУСК ФОНОВЫХ ЗАДАЧ (БЕЗ DEPRECATION WARNING) ==========
-# Используем lifespan вместо on_event
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("🚀 Запуск фоновых задач...")
-    asyncio.create_task(run_background_tasks())
-    asyncio.create_task(run_daily_tasks())
-    logger.info("✅ Фоновые задачи запущены")
-    yield
-    # Shutdown (опционально)
-    logger.info("🛑 Остановка фоновых задач...")
-
-# Пересоздаём app с lifespan
-app = FastAPI(title="Beauty Bot API", version="3.0.0", lifespan=lifespan)
-
 # ========== ОСНОВНЫЕ ЭНДПОИНТЫ ==========
 
 @app.get("/masters")
@@ -876,6 +869,8 @@ async def create_booking(data: BookingIn):
         raise HTTPException(500, detail=str(e))
     finally:
         conn.close()
+
+# ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ==========
 
 @app.post("/payment-callback")
 def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
@@ -1715,6 +1710,23 @@ async def confirm_booking_by_id(booking_id: int):
     finally:
         conn.close()
 
+@app.get("/test-notification")
+async def test_notification():
+    msg = f"🔔 *ТЕСТ!* 🔔\n\nПривет! Это тестовое уведомление от бота @pinkspotvelur_bot\n\nТвой ID: {ADMIN_CHAT_ID}\nВремя: {datetime.now().strftime('%H:%M:%S')}"
+    result = send_notification_to_admin_sync(msg)
+    if result:
+        return {"status": "ok", "message": f"Уведомление отправлено на ID {ADMIN_CHAT_ID}"}
+    else:
+        return {"status": "error", "message": "Не удалось отправить уведомление"}
+
+@app.get("/test-all-masters")
+async def test_all_masters():
+    conn = get_db()
+    msg = "🔔 *ТЕСТОВОЕ УВЕДОМЛЕНИЕ ВСЕМ МАСТЕРАМ!* 🔔\n\nЭто тестовая рассылка всем мастерам из БД."
+    count = send_notification_to_all_masters(msg, conn)
+    conn.close()
+    return {"status": "ok", "message": f"Уведомления отправлены {count} мастерам"}
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "timestamp": datetime.now().isoformat()}
@@ -1738,5 +1750,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         log_level="info"
-        # reload=True - НЕ ИСПОЛЬЗУЙ НА ПРОДУКШЕНЕ!
     )
