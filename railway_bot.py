@@ -12,21 +12,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
-PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN", "live_6Up436nmim-lFT8x7PV84HHsiUwEzxLMZOrmwPy5FEk")  # 👈 ЗАМЕНИ НА СВОЙ ТОКЕН!
+PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN", "live_6Up436nmim-lFT8x7PV84HHsiUwEzxLMZOrmwPy5FEk")
 API_URL = os.getenv("API_URL", "https://intuitive-fascination-production-ce82.up.railway.app")
 CHANNEL_USERNAME = "@pinkspotnews"
-COMMISSION_PERCENT = 7  # Фиксированная комиссия 7%
+COMMISSION_PERCENT = 7
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ========== АДМИНЫ ==========
-ADMIN_IDS = [868528632]  # ТВОЙ TELEGRAM ID
+ADMIN_IDS = [868528632]  # ТВОЙ ID
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+# ========== ФУНКЦИИ ==========
 
 async def api_request(method: str, endpoint: str, data: dict = None):
-    """Универсальная функция для запросов к API"""
     url = f"{API_URL}{endpoint}"
     async with aiohttp.ClientSession() as session:
         try:
@@ -61,6 +59,25 @@ async def check_subscription(user_id: int) -> bool:
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+# ========== РЕГИСТРАЦИЯ CHAT_ID МАСТЕРА ==========
+async def register_master_chat(telegram_id: str, chat_id: str, user_id: str):
+    """Отправляет chat_id мастера на сервер для сохранения"""
+    try:
+        result = await api_request("POST", "/master/register-chat", {
+            "telegram_id": telegram_id,
+            "chat_id": chat_id,
+            "user_id": user_id
+        })
+        if result:
+            logger.info(f"✅ Chat_id {chat_id} зарегистрирован для мастера {telegram_id}")
+            return True
+        else:
+            logger.error(f"❌ Ошибка регистрации chat_id для {telegram_id}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        return False
 
 # ========== КЛАВИАТУРЫ ==========
 
@@ -109,9 +126,10 @@ def back_to_admin():
 @dp.message(CommandStart())
 async def start(message: types.Message):
     user_id = message.from_user.id
+    chat_id = str(message.chat.id)
     text = message.text
     
-    logger.info(f"Пользователь {user_id} вызвал /start")
+    logger.info(f"🔄 /start от {user_id} (chat_id: {chat_id})")
     
     # Регистрация пользователя
     await api_request("POST", "/user/register", {"telegram_id": str(user_id)})
@@ -147,7 +165,7 @@ async def start(message: types.Message):
     
     # ========== АДМИН-ПАНЕЛЬ ==========
     if is_admin(user_id):
-        logger.info(f"Админ {user_id} получил админ-панель")
+        logger.info(f"👑 Админ {user_id} получил админ-панель")
         await message.answer(
             "👑 *Beauty Bot Admin Panel*\n\n"
             "👥 Управление мастерами\n"
@@ -159,16 +177,22 @@ async def start(message: types.Message):
         )
         return
     
-    # ========== ПРОВЕРКА НА МАСТЕРА ==========
+    # ========== ПРОВЕРКА НА МАСТЕРА И РЕГИСТРАЦИЯ CHAT_ID ==========
     master_data = await api_request("GET", f"/masters/by_telegram/{user_id}")
     
     if master_data and master_data.get("id"):
-        master_name = master_data.get("name", "Мастер")
         master_id = master_data.get("id")
-        logger.info(f"Мастер {master_name} (ID: {user_id}) авторизован")
+        master_name = master_data.get("name", "Мастер")
+        
+        # ✅ РЕГИСТРИРУЕМ CHAT_ID МАСТЕРА
+        await register_master_chat(str(user_id), chat_id, str(user_id))
+        
+        logger.info(f"👑 Мастер {master_name} (ID: {user_id}) авторизован, chat_id сохранён")
+        
         await message.answer(
             f"👋 *Здравствуйте, {master_name}!*\n\n"
-            f"✅ Вы зарегистрированы как мастер Beauty Map.\n\n"
+            f"✅ Вы зарегистрированы как мастер Beauty Map.\n"
+            f"✅ Ваш чат ID сохранён — уведомления будут приходить сюда.\n\n"
             f"📊 Нажмите «Мой кабинет мастера» для управления:\n"
             f"• Услугами и ценами\n"
             f"• Расписанием и днями отдыха\n"
@@ -181,7 +205,7 @@ async def start(message: types.Message):
         return
     
     # ========== ОБЫЧНЫЙ КЛИЕНТ ==========
-    logger.info(f"Обычный клиент {user_id}")
+    logger.info(f"👤 Обычный клиент {user_id}")
     await message.answer(
         "💅 *Добро пожаловать в Beauty Map!*\n\n"
         "Нажми кнопку ниже, чтобы найти мастера рядом с тобой.\n\n"
@@ -190,41 +214,27 @@ async def start(message: types.Message):
         reply_markup=client_keyboard()
     )
 
-
 # ========== НАТИВНАЯ ОПЛАТА ЧЕРЕЗ ЮKASSA ==========
 
 @dp.callback_query(F.data.startswith("pay_commission_"))
 async def handle_pay_commission(callback: types.CallbackQuery):
-    """Обработка нажатия на кнопку оплаты комиссии (вызывается из веб-приложения)"""
+    """Обработка нажатия на кнопку оплаты комиссии"""
     booking_id = int(callback.data.split("_")[2])
     
-    # Получаем информацию о бронировании через API
-    booking = await api_request("GET", f"/bookings/client/{callback.from_user.id}")
+    booking = await api_request("GET", f"/bookings/{booking_id}")
     if not booking:
         await callback.answer("❌ Запись не найдена", show_alert=True)
         return
     
-    target_booking = None
-    for b in booking:
-        if b.get("id") == booking_id:
-            target_booking = b
-            break
-    
-    if not target_booking:
-        await callback.answer("❌ Запись не найдена", show_alert=True)
-        return
-    
-    commission_amount = target_booking.get("commission_amount", 0)
-    service_name = target_booking.get("service_name", "Услуга")
+    commission_amount = booking.get("deposit_amount", 0)
+    service_name = booking.get("service_name", "Услуга")
     
     if commission_amount <= 0:
         await callback.answer("✅ Комиссия уже оплачена", show_alert=True)
         return
     
-    # Сумма в копейках (Telegram требует копейки)
     amount_kopecks = int(commission_amount * 100)
     
-    # Данные для чека (provider_data)
     provider_data = {
         "receipt": {
             "items": [{
@@ -264,10 +274,7 @@ async def handle_pay_commission(callback: types.CallbackQuery):
 
 @dp.pre_checkout_query()
 async def pre_checkout_query_handler(pre_checkout_q: PreCheckoutQuery):
-    """Обработка предварительного запроса перед оплатой (обязательно ответить в течение 10 секунд)"""
     logger.info(f"PreCheckoutQuery получен: {pre_checkout_q.id}")
-    
-    # Обязательно отвечаем в течение 10 секунд!
     await bot.answer_pre_checkout_query(
         pre_checkout_query_id=pre_checkout_q.id,
         ok=True
@@ -275,7 +282,6 @@ async def pre_checkout_query_handler(pre_checkout_q: PreCheckoutQuery):
 
 @dp.message(lambda message: message.successful_payment is not None)
 async def successful_payment_handler(message: types.Message):
-    """Обработка успешного платежа"""
     payment = message.successful_payment
     payload = payment.invoice_payload
     telegram_payment_charge_id = payment.telegram_payment_charge_id
@@ -283,11 +289,9 @@ async def successful_payment_handler(message: types.Message):
     
     logger.info(f"Успешный платеж: {telegram_payment_charge_id}")
     
-    # Парсим payload (commission_123)
     if payload.startswith("commission_"):
         booking_id = int(payload.split("_")[1])
         
-        # Обновляем статус платежа в БД через API
         result = await api_request("POST", "/payment-callback", {
             "payment_id": provider_payment_charge_id,
             "booking_id": booking_id
@@ -300,7 +304,6 @@ async def successful_payment_handler(message: types.Message):
             f"💬 Чат с мастером будет доступен в разделе «Записи».",
             parse_mode="Markdown"
         )
-
 
 # ========== АДМИН-КОЛБЭКИ ==========
 
@@ -340,7 +343,7 @@ async def handle_add_master(message: types.Message):
     instagram = parts[3].strip() if len(parts) > 3 else ""
     description = parts[4].strip() if len(parts) > 4 else ""
     
-    result = await api_request("POST", "/admin/add-master", {
+    result = await api_request("POST", "/admin/add-master-full", {
         "name": name,
         "address": address,
         "phone": phone,
@@ -349,7 +352,7 @@ async def handle_add_master(message: types.Message):
     })
     
     if result:
-        master_id = result.get("id")
+        master_id = result.get("master_id")
         await message.answer(
             f"✅ Мастер *{name}* добавлен!\n\n"
             f"🆔 ID мастера: `{master_id}`\n\n"
@@ -414,10 +417,10 @@ async def admin_set_telegram_prompt(callback: types.CallbackQuery):
 @dp.message(lambda msg: msg.text and len(msg.text.split()) == 2 and is_admin(msg.from_user.id) and msg.text.split()[0].isdigit())
 async def handle_set_telegram(message: types.Message):
     parts = message.text.split()
-    master_id = parts[0]
+    master_id = int(parts[0])
     telegram_id = parts[1]
     
-    result = await api_request("PATCH", f"/masters/{master_id}/telegram", {"telegram_id": telegram_id})
+    result = await api_request("PATCH", f"/masters/{master_id}", {"telegram_id": telegram_id})
     
     if result:
         await message.answer(
@@ -456,12 +459,12 @@ async def handle_edit_services(message: types.Message):
         await message.answer("❌ Неверный формат")
         return
     
-    master_id = parts[0]
+    master_id = int(parts[0])
     rest = parts[1]
     
     if "DELETE" in rest.upper():
         service_name = rest.replace("DELETE", "").strip()
-        result = await api_request("DELETE", f"/master/{master_id}/services", {"name": service_name})
+        result = await api_request("DELETE", f"/master/{master_id}/services/{service_name}")
         if result:
             await message.answer(f"✅ Услуга *{service_name}* удалена у мастера ID {master_id}", parse_mode="Markdown")
         else:
@@ -545,7 +548,7 @@ async def handle_add_promo(message: types.Message):
     
     valid_until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
     
-    result = await api_request("POST", "/admin/add-promo", {
+    result = await api_request("POST", "/promocodes", {
         "code": code,
         "discount_percent": discount,
         "valid_until": valid_until,
@@ -589,7 +592,6 @@ async def admin_stats(callback: types.CallbackQuery):
     
     await callback.message.answer(text, parse_mode="Markdown", reply_markup=back_to_admin())
     await callback.answer()
-
 
 # ========== МАСТЕР-КОЛБЭКИ ==========
 
@@ -674,13 +676,12 @@ async def handle_master_delete_service(message: types.Message):
     
     service_name = message.text.replace("DELETE", "").strip()
     
-    result = await api_request("DELETE", f"/master/{master_data['id']}/services", {"name": service_name})
+    result = await api_request("DELETE", f"/master/{master_data['id']}/services/{service_name}")
     
     if result:
         await message.answer(f"✅ Услуга *{service_name}* удалена", parse_mode="Markdown")
     else:
         await message.answer("❌ Ошибка при удалении услуги")
-
 
 # ========== КЛИЕНТ-КОЛБЭКИ ==========
 
@@ -720,7 +721,6 @@ async def handle_enter_promo(message: types.Message):
             parse_mode="Markdown"
         )
 
-
 # ========== ПРОВЕРКА ПОДПИСКИ ==========
 
 @dp.callback_query(F.data == "check_sub")
@@ -734,7 +734,6 @@ async def check_subscription_callback(callback: types.CallbackQuery):
         await callback.answer("✅ Спасибо за подписку!", show_alert=True)
     else:
         await callback.answer("❌ Ты ещё не подписан. Нажми на кнопку «Подписаться» и попробуй снова.", show_alert=True)
-
 
 # ========== КОМАНДЫ ==========
 
@@ -754,7 +753,6 @@ async def admin_command(message: types.Message):
     else:
         await message.answer("⛔ У вас нет доступа к админ-панели")
 
-
 # ========== ЗАПУСК ==========
 
 async def main():
@@ -763,7 +761,6 @@ async def main():
     logger.info(f"🌐 API URL: {API_URL}")
     logger.info(f"💸 Комиссия: {COMMISSION_PERCENT}%")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
