@@ -25,6 +25,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+app = FastAPI(title="Beauty Bot API", version="3.0.0")
+
 # === КОНФИГУРАЦИЯ ===
 YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1368786")
 YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "live_aRHBYSr1irUAO8_dvzZCmQCih-vTF0q0NFfSvW5OOcs")
@@ -33,26 +35,14 @@ PAYMENT_COMMISSION = 0.07
 CLEANING_TIME = 15
 MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN", "8236516081:AAFjIjQBiAMs95XpURSCZZhuuYr5yDrcmlw")
 
-# ✅ ТВОЙ TELEGRAM ID (для уведомлений админу)
-ADMIN_CHAT_ID = "868528632"
+# ✅ ЭТОТ ЧАТ — СЮДА ПРИХОДЯТ ВСЕ УВЕДОМЛЕНИЯ
+ADMIN_CHAT_ID = "868528632"  # ТВОЙ ID
 
 # === ПУТЬ К БАЗЕ ===
 DB_PATH = os.path.join(os.getcwd(), "data", "beauty.db")
 PHOTO_DIR = os.path.join(os.getcwd(), "data", "photos")
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 os.makedirs(PHOTO_DIR, exist_ok=True)
-
-# === LIFESPAN ===
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("🚀 Запуск фоновых задач...")
-    asyncio.create_task(run_background_tasks())
-    asyncio.create_task(run_daily_tasks())
-    logger.info("✅ Фоновые задачи запущены")
-    yield
-    logger.info("🛑 Остановка фоновых задач...")
-
-app = FastAPI(title="Beauty Bot API", version="3.0.0", lifespan=lifespan)
 
 app.mount("/photos", StaticFiles(directory=PHOTO_DIR), name="photos")
 
@@ -307,7 +297,6 @@ def init_db():
         FOREIGN KEY (service_id) REFERENCES services(id)
     )""")
     
-    # ✅ НОВАЯ ТАБЛИЦА ДЛЯ ХРАНЕНИЯ CHAT_ID МАСТЕРОВ
     c.execute("""CREATE TABLE IF NOT EXISTS master_chats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         master_id INTEGER,
@@ -435,9 +424,6 @@ async def send_telegram_message(chat_id: str, message: str, parse_mode: str = "M
             if response.status_code == 200:
                 logger.info(f"✅ Сообщение отправлено в Telegram: {chat_id}")
                 return True
-            elif response.status_code == 403:
-                logger.error(f"❌ Forbidden: бот не может писать {chat_id}")
-                return False
             else:
                 logger.error(f"❌ Ошибка: {response.status_code}")
                 return False
@@ -455,9 +441,6 @@ def send_telegram_message_sync(chat_id: str, message: str, parse_mode: str = "Ma
         if response.status_code == 200:
             logger.info(f"✅ Сообщение отправлено в Telegram: {chat_id}")
             return True
-        elif response.status_code == 403:
-            logger.error(f"❌ Forbidden: бот не может писать {chat_id}")
-            return False
         else:
             logger.error(f"❌ Ошибка: {response.status_code} - {response.text}")
             return False
@@ -465,76 +448,23 @@ def send_telegram_message_sync(chat_id: str, message: str, parse_mode: str = "Ma
         logger.error(f"❌ Ошибка: {e}")
         return False
 
-# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С CHAT_ID ==========
-def get_master_chat_id(master_id, conn):
-    """Получить правильный chat_id мастера"""
-    try:
-        result = conn.execute(
-            "SELECT chat_id FROM master_chats WHERE master_id = ? ORDER BY last_active DESC LIMIT 1",
-            (master_id,)
-        ).fetchone()
-        return result["chat_id"] if result else None
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения chat_id: {e}")
-        return None
+# ========== УВЕДОМЛЕНИЯ В ЭТОТ ЧАТ (ДЛЯ ВСЕХ) ==========
 
-def get_all_masters_chat_ids(conn):
-    """Получить все chat_id мастеров из БД"""
-    try:
-        results = conn.execute(
-            "SELECT mc.chat_id, m.id, m.name FROM master_chats mc JOIN masters m ON mc.master_id = m.id ORDER BY mc.last_active DESC"
-        ).fetchall()
-        return [dict(r) for r in results]
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения chat_id: {e}")
-        return []
-
-def update_master_chat_id(master_id, chat_id, user_id, conn):
-    """Обновить chat_id мастера при взаимодействии"""
-    try:
-        conn.execute("""
-            INSERT OR REPLACE INTO master_chats (master_id, chat_id, user_id, last_active)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-        """, (master_id, chat_id, user_id))
-        conn.commit()
-        logger.info(f"✅ Обновлён chat_id для мастера {master_id}: {chat_id}")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка обновления chat_id: {e}")
-        return False
-
-# ========== АВТОМАТИЧЕСКИЕ УВЕДОМЛЕНИЯ ВСЕМ МАСТЕРАМ ==========
-def send_notification_to_all_masters(message: str, conn):
-    """Отправляет уведомление ВСЕМ мастерам по их chat_id"""
-    try:
-        masters = get_all_masters_chat_ids(conn)
-        if not masters:
-            logger.warning("⚠️ Нет chat_id мастеров в БД")
-            return 0
-        
-        sent_count = 0
-        for master in masters:
-            if master.get("chat_id"):
-                send_telegram_message_sync(master["chat_id"], message)
-                sent_count += 1
-                logger.info(f"✅ Уведомление отправлено мастеру {master['name']} (chat_id: {master['chat_id']})")
-        
-        logger.info(f"✅ Уведомления отправлены {sent_count} мастерам")
-        return sent_count
-    except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
-        return 0
-
-def send_notification_to_admin_sync(message: str):
-    """Отправка уведомления админу (тебе)"""
+def send_notification_to_chat(message: str):
+    """ОТПРАВЛЯЕТ УВЕДОМЛЕНИЕ В ЭТОТ ЧАТ (ВСЕМ)"""
     try:
         response = requests.post(
             f"https://api.telegram.org/bot{MASTER_BOT_TOKEN}/sendMessage",
-            json={"chat_id": ADMIN_CHAT_ID, "text": message, "parse_mode": "Markdown"},
+            json={
+                "chat_id": ADMIN_CHAT_ID,  # ЭТОТ ЧАТ
+                "text": message,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True
+            },
             timeout=10
         )
         if response.status_code == 200:
-            logger.info(f"✅ Уведомление отправлено админу {ADMIN_CHAT_ID}")
+            logger.info(f"✅ Уведомление отправлено в чат {ADMIN_CHAT_ID}")
             return True
         else:
             logger.error(f"❌ Ошибка: {response.status_code} - {response.text}")
@@ -607,22 +537,26 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
                     (booking_id, master["id"], booking["client_telegram_id"], master["telegram_id"], token))
         conn.commit()
         
-        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ (по chat_id)
-        master_chat_id = get_master_chat_id(master["id"], conn)
-        if master_chat_id:
-            master_msg = f"""🌸 *НОВАЯ ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸
-
-👩 {booking['client_name']}
-📞 {booking['client_phone'] or 'не указан'}
-💅 {service['name']}
-💰 {service['price']} ₽
-💸 Депозит: {booking['deposit_amount']} ₽
-📅 {booking['date']} в {booking['time']}"""
-            send_telegram_message_sync(master_chat_id, master_msg)
-        else:
-            logger.warning(f"⚠️ Нет chat_id для мастера {master['id']}")
+        # ========== УВЕДОМЛЕНИЯ В ЭТОТ ЧАТ ==========
         
-        # ✅ УВЕДОМЛЕНИЕ КЛИЕНТУ
+        # 1️⃣ УВЕДОМЛЕНИЕ В ЭТОТ ЧАТ (ДЛЯ ВСЕХ)
+        chat_msg = f"""🌸 *НОВАЯ ОПЛАЧЕННАЯ ЗАПИСЬ!* 🌸
+
+👤 Клиент: {booking['client_name']}
+📞 Телефон: {booking['client_phone'] or 'не указан'}
+💅 Услуга: {service['name']}
+💰 Стоимость: {service['price']} ₽
+💸 Депозит: {booking['deposit_amount']} ₽
+📅 Дата: {booking['date']}
+⏰ Время: {booking['time']}
+👩‍💼 Мастер: {master['name']}
+🆔 ID записи: {booking_id}
+
+📌 Статус: ✅ ПОДТВЕРЖДЕНА"""
+        
+        send_notification_to_chat(chat_msg)
+        
+        # 2️⃣ УВЕДОМЛЕНИЕ КЛИЕНТУ
         client_msg = f"""🌸 *ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸
 
 💅 {master['name']}
@@ -635,118 +569,89 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
         if booking.get("client_telegram_id"):
             send_telegram_message_sync(booking["client_telegram_id"], client_msg)
         
-        # ✅ АВТОМАТИЧЕСКОЕ УВЕДОМЛЕНИЕ ВСЕМ МАСТЕРАМ
-        all_masters_msg = f"""🌸 *НОВАЯ ОПЛАЧЕННАЯ ЗАПИСЬ!* 🌸
-
-👤 Клиент: {booking['client_name']}
-💅 Услуга: {service['name']}
-💰 {service['price']} ₽
-📅 {booking['date']}
-⏰ {booking['time']}
-👩‍💼 Мастер: {master['name']}
-🆔 ID: {booking_id}"""
-        
-        send_notification_to_all_masters(all_masters_msg, conn)
-        
-        # ✅ УВЕДОМЛЕНИЕ АДМИНУ (ТЕБЕ)
-        admin_msg = f"""🌸 *НОВАЯ ОПЛАЧЕННАЯ ЗАПИСЬ!* 🌸
-
-👤 Клиент: {booking['client_name']}
-💅 Услуга: {service['name']}
-💰 {service['price']} ₽
-📅 {booking['date']}
-⏰ {booking['time']}
-👩‍💼 Мастер: {master['name']}
-🆔 ID: {booking_id}"""
-        
-        send_notification_to_admin_sync(admin_msg)
-        
-        logger.info(f"✅ Бронь {booking_id} подтверждена")
+        logger.info(f"✅ Бронь {booking_id} подтверждена, уведомления отправлены в чат")
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
         traceback.print_exc()
 
-# ========== НАПОМИНАНИЯ ==========
-async def send_reminders():
+# ========== СОЗДАНИЕ БРОНИ ==========
+@app.post("/bookings")
+async def create_booking(data: BookingIn):
     conn = get_db()
     try:
-        now = datetime.now()
-        today = now.strftime("%Y-%m-%d")
-        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        master = conn.execute("SELECT * FROM masters WHERE id=?", (data.master_id,)).fetchone()
+        if not master:
+            raise HTTPException(404, "Master not found")
         
-        reminders_24h = conn.execute("""
-            SELECT b.*, m.name as master_name, m.address, s.name as service_name
-            FROM bookings b
-            JOIN masters m ON b.master_id = m.id
-            JOIN services s ON b.service_id = s.id
-            WHERE b.status = 'confirmed' AND b.date = ? AND b.reminder_24h_sent = 0
-        """, (tomorrow,)).fetchall()
+        service = conn.execute("SELECT * FROM services WHERE id=? AND master_id=?", (data.service_id, data.master_id)).fetchone()
+        if not service:
+            raise HTTPException(404, "Service not found")
         
-        for b in reminders_24h:
-            msg = f"🌸 *Напоминание о записи!* 🌸\n\nЗавтра в *{b['time']}* у вас запись к {b['master_name']} на *{b['service_name']}*.\n📍 Адрес: {b['address']}\n\nЖдём вас! 🎀"
-            await send_telegram_message(b['client_telegram_id'], msg)
-            conn.execute("UPDATE bookings SET reminder_24h_sent = 1 WHERE id = ?", (b['id'],))
+        existing = conn.execute("SELECT id FROM bookings WHERE master_id=? AND date=? AND time=? AND status IN ('pending_payment', 'confirmed')", 
+                               (data.master_id, data.date, data.time)).fetchone()
+        if existing:
+            raise HTTPException(409, "Slot already booked")
         
-        hour_later = (now + timedelta(hours=1)).strftime("%H:%M")
-        reminders_1h = conn.execute("""
-            SELECT b.*, m.name as master_name, s.name as service_name
-            FROM bookings b
-            JOIN masters m ON b.master_id = m.id
-            JOIN services s ON b.service_id = s.id
-            WHERE b.status = 'confirmed' AND b.date = ? AND b.time = ? AND b.reminder_1h_sent = 0
-        """, (today, hour_later)).fetchall()
+        deposit_amount = round(service["price"] * PAYMENT_COMMISSION, 2)
+        total_with_commission = service["price"] + deposit_amount
         
-        for b in reminders_1h:
-            msg = f"🌸 *Скоро запись!* 🌸\n\nЧерез час у вас запись к {b['master_name']} на *{b['service_name']}*.\n\nНе опаздывайте! 🚗"
-            await send_telegram_message(b['client_telegram_id'], msg)
-            conn.execute("UPDATE bookings SET reminder_1h_sent = 1 WHERE id = ?", (b['id'],))
-        
+        cur = conn.execute("""
+            INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time, deposit_amount, total_amount, payment_status)
+            VALUES (?,?,?,?,?,?,?,?,?, 'pending')
+        """, (data.master_id, data.service_id, data.client_name, data.client_telegram_id, data.client_phone, data.date, data.time, deposit_amount, total_with_commission))
         conn.commit()
+        booking_id = cur.lastrowid
+        
+        logger.info(f"📝 Бронь {booking_id}: {data.client_name} -> {service['name']}")
+        
+        payment = await create_ykassa_payment(
+            amount=deposit_amount,
+            description=f"Бронь {service['name']} (депозит {deposit_amount}₽)",
+            return_url=f"{YKASSA_RETURN_URL}?booking_id={booking_id}",
+            booking_id=booking_id
+        )
+        
+        conn.execute("UPDATE bookings SET payment_id=? WHERE id=?", (payment["payment_id"], booking_id))
+        conn.commit()
+        
+        # ========== УВЕДОМЛЕНИЯ В ЭТОТ ЧАТ ==========
+        
+        # 1️⃣ УВЕДОМЛЕНИЕ В ЭТОТ ЧАТ (ДЛЯ ВСЕХ)
+        chat_msg = f"""💳 *НОВАЯ ЗАЯВКА НА ЗАПИСЬ!* 💳
+
+👤 Клиент: {data.client_name}
+📞 Телефон: {data.client_phone or 'не указан'}
+💅 Услуга: {service['name']}
+💰 Стоимость: {service['price']} ₽
+💸 Депозит: {deposit_amount} ₽
+📅 Дата: {data.date}
+⏰ Время: {data.time}
+👩‍💼 Мастер: {master['name']}
+🆔 ID записи: {booking_id}
+
+📌 Статус: ⏳ ОЖИДАЕТ ОПЛАТЫ"""
+        
+        send_notification_to_chat(chat_msg)
+        
+        return {
+            "booking_id": booking_id,
+            "payment_url": payment["confirmation_url"],
+            "deposit_amount": deposit_amount,
+            "service_price": service["price"],
+            "total_with_commission": total_with_commission,
+            "status": "pending_payment"
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
+        logger.error(f"Ошибка: {e}")
+        raise HTTPException(500, detail=str(e))
     finally:
         conn.close()
-
-async def check_repeat_reminders():
-    conn = get_db()
-    try:
-        bookings = conn.execute("""
-            SELECT b.*, s.name as service_name, m.name as master_name
-            FROM bookings b
-            JOIN services s ON b.service_id = s.id
-            JOIN masters m ON b.master_id = m.id
-            WHERE b.status = 'confirmed' 
-            AND b.date <= date('now', '-20 days')
-            AND b.date >= date('now', '-25 days')
-            AND b.reminder_sent = 0
-        """).fetchall()
-        
-        for b in bookings:
-            days_ago = (datetime.now() - datetime.strptime(b['date'], "%Y-%m-%d")).days
-            msg = f"💅 *Пора повторить!* 💅\n\n{b['service_name']} вы делали {days_ago} дней назад.\n✨ *Время обновить!* Запишитесь прямо сейчас!"
-            await send_telegram_message(b['client_telegram_id'], msg)
-            conn.execute("UPDATE bookings SET reminder_sent = 1 WHERE id = ?", (b['id'],))
-        
-        conn.commit()
-    except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
-    finally:
-        conn.close()
-
-async def run_background_tasks():
-    while True:
-        await send_reminders()
-        await asyncio.sleep(1800)
-
-async def run_daily_tasks():
-    while True:
-        await check_repeat_reminders()
-        await asyncio.sleep(86400)
 
 # ========== ЭНДПОИНТ ДЛЯ РЕГИСТРАЦИИ CHAT_ID МАСТЕРА ==========
 @app.post("/master/register-chat")
-def register_master_chat(data: MasterChatRegister, conn: sqlite3.Connection = Depends(get_db)):
-    """Мастер взаимодействует с ботом - сохраняем chat_id"""
+def register_master_chat_endpoint(data: MasterChatRegister, conn: sqlite3.Connection = Depends(get_db)):
     try:
         telegram_id = data.telegram_id
         chat_id = data.chat_id
@@ -757,16 +662,94 @@ def register_master_chat(data: MasterChatRegister, conn: sqlite3.Connection = De
         
         master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
         if not master:
-            return {"status": "error", "message": "Мастер не найден в системе"}
+            return {"status": "error", "message": "Мастер не найден"}
         
-        update_master_chat_id(master["id"], chat_id, user_id, conn)
+        # Сохраняем chat_id в БД
+        conn.execute("""
+            INSERT OR REPLACE INTO master_chats (master_id, chat_id, user_id, last_active)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        """, (master["id"], chat_id, user_id))
+        conn.commit()
         
-        return {"status": "ok", "message": f"Chat_id {chat_id} сохранён для мастера {master['id']}"}
+        logger.info(f"✅ Chat_id {chat_id} сохранён для мастера {master['id']}")
+        return {"status": "ok", "message": f"Chat_id {chat_id} сохранён"}
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
         return {"status": "error", "message": str(e)}
 
-# ========== ОСНОВНЫЕ ЭНДПОИНТЫ ==========
+# ========== ТЕСТОВЫЙ ЭНДПОИНТ ==========
+@app.get("/test-notification")
+async def test_notification():
+    msg = f"🔔 *ТЕСТОВОЕ УВЕДОМЛЕНИЕ В ЭТОТ ЧАТ!* 🔔\n\nПривет! Это тест от бота @pinkspotvelur_bot\n\n✅ Если ты видишь это сообщение — значит уведомления работают!\n\n📱 ID чата: {ADMIN_CHAT_ID}\n⏰ Время: {datetime.now().strftime('%H:%M:%S')}"
+    
+    result = send_notification_to_chat(msg)
+    
+    if result:
+        return {"status": "ok", "message": f"Уведомление отправлено в чат {ADMIN_CHAT_ID}"}
+    else:
+        return {"status": "error", "message": "Не удалось отправить уведомление"}
+
+# ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ==========
+
+@app.post("/payment-callback")
+def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
+    booking_id = data.get("booking_id")
+    payment_id = data.get("payment_id")
+    
+    if not booking_id:
+        return {"status": "error", "message": "booking_id required"}
+    
+    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    if not booking:
+        return {"status": "error", "message": "Booking not found"}
+    
+    if booking["status"] == "confirmed":
+        return {"status": "ok", "message": "Already confirmed"}
+    
+    try:
+        conn.execute("""
+            UPDATE bookings 
+            SET status = 'confirmed', 
+                payment_status = 'paid',
+                confirmed_at = CURRENT_TIMESTAMP,
+                payment_id = ?
+            WHERE id = ?
+        """, (payment_id or booking["payment_id"], booking_id))
+        conn.commit()
+        confirm_booking(booking_id, conn)
+        return {"status": "ok", "message": "Payment confirmed"}
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/ykassa-webhook")
+async def ykassa_webhook(request: Request, conn: sqlite3.Connection = Depends(get_db)):
+    try:
+        body = await request.body()
+        raw_body = body.decode('utf-8')
+        
+        try:
+            notification = json.loads(raw_body)
+        except:
+            return {"status": "error", "detail": "Invalid JSON"}
+        
+        event_type = notification.get("event")
+        
+        if event_type == "payment.succeeded":
+            metadata = notification.get("object", {}).get("metadata", {})
+            booking_id = metadata.get("booking_id")
+            
+            if booking_id:
+                booking = conn.execute("SELECT id, status FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+                if booking and booking["status"] != "confirmed":
+                    conn.execute("UPDATE bookings SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
+                    conn.commit()
+                    confirm_booking(booking_id, conn)
+                    logger.info(f"✅ [WEBHOOK] Бронь {booking_id} подтверждена!")
+    except Exception as e:
+        logger.error(f"❌ [WEBHOOK] Ошибка: {e}")
+    
+    return {"status": "ok"}
 
 @app.get("/masters")
 def get_masters(conn=Depends(get_db)):
@@ -856,164 +839,6 @@ def get_slots(master_id: int, date: str, service_id: int, conn=Depends(get_db)):
         free_slots = [s for s in free_slots if time_to_minutes(s) > now_minutes]
     
     return {"date": date, "slots": free_slots, "day_off": False}
-
-# ========== СОЗДАНИЕ БРОНИ ==========
-@app.post("/bookings")
-async def create_booking(data: BookingIn):
-    conn = get_db()
-    try:
-        master = conn.execute("SELECT * FROM masters WHERE id=?", (data.master_id,)).fetchone()
-        if not master:
-            raise HTTPException(404, "Master not found")
-        
-        service = conn.execute("SELECT * FROM services WHERE id=? AND master_id=?", (data.service_id, data.master_id)).fetchone()
-        if not service:
-            raise HTTPException(404, "Service not found")
-        
-        existing = conn.execute("SELECT id FROM bookings WHERE master_id=? AND date=? AND time=? AND status IN ('pending_payment', 'confirmed')", 
-                               (data.master_id, data.date, data.time)).fetchone()
-        if existing:
-            raise HTTPException(409, "Slot already booked")
-        
-        deposit_amount = round(service["price"] * PAYMENT_COMMISSION, 2)
-        total_with_commission = service["price"] + deposit_amount
-        
-        cur = conn.execute("""
-            INSERT INTO bookings (master_id, service_id, client_name, client_telegram_id, client_phone, date, time, deposit_amount, total_amount, payment_status)
-            VALUES (?,?,?,?,?,?,?,?,?, 'pending')
-        """, (data.master_id, data.service_id, data.client_name, data.client_telegram_id, data.client_phone, data.date, data.time, deposit_amount, total_with_commission))
-        conn.commit()
-        booking_id = cur.lastrowid
-        
-        logger.info(f"📝 Бронь {booking_id}: {data.client_name} -> {service['name']}")
-        
-        payment = await create_ykassa_payment(
-            amount=deposit_amount,
-            description=f"Бронь {service['name']} (депозит {deposit_amount}₽)",
-            return_url=f"{YKASSA_RETURN_URL}?booking_id={booking_id}",
-            booking_id=booking_id
-        )
-        
-        conn.execute("UPDATE bookings SET payment_id=? WHERE id=?", (payment["payment_id"], booking_id))
-        conn.commit()
-        
-        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ (по chat_id)
-        master_chat_id = get_master_chat_id(master["id"], conn)
-        if master_chat_id:
-            master_msg = f"💳 *НОВАЯ ЗАЯВКА* 💳\n\n👩 {data.client_name}\n📞 {data.client_phone or 'не указан'}\n💅 {service['name']}\n💰 {service['price']} ₽\n💸 Депозит: {deposit_amount} ₽\n📅 {data.date} в {data.time}"
-            asyncio.create_task(send_telegram_message(master_chat_id, master_msg))
-        else:
-            logger.warning(f"⚠️ Нет chat_id для мастера {master['id']}")
-        
-        # ✅ АВТОМАТИЧЕСКОЕ УВЕДОМЛЕНИЕ ВСЕМ МАСТЕРАМ
-        all_masters_msg = f"""💳 *НОВАЯ ЗАЯВКА НА ЗАПИСЬ!* 💳
-
-👤 Клиент: {data.client_name}
-💅 Услуга: {service['name']}
-💰 {service['price']} ₽
-💸 Депозит: {deposit_amount} ₽
-📅 {data.date}
-⏰ {data.time}
-👩‍💼 Мастер: {master['name']}
-🆔 ID: {booking_id}
-
-📌 Статус: ОЖИДАЕТ ОПЛАТЫ ⏳"""
-        
-        send_notification_to_all_masters(all_masters_msg, conn)
-        
-        # ✅ УВЕДОМЛЕНИЕ АДМИНУ (ТЕБЕ)
-        admin_msg = f"""💳 *НОВАЯ ЗАЯВКА НА ЗАПИСЬ!* 💳
-
-👤 Клиент: {data.client_name}
-💅 Услуга: {service['name']}
-💰 {service['price']} ₽
-💸 Депозит: {deposit_amount} ₽
-📅 {data.date}
-⏰ {data.time}
-👩‍💼 Мастер: {master['name']}
-🆔 ID: {booking_id}
-
-📌 Статус: ОЖИДАЕТ ОПЛАТЫ ⏳"""
-        
-        asyncio.create_task(send_telegram_message(ADMIN_CHAT_ID, admin_msg))
-        
-        return {
-            "booking_id": booking_id,
-            "payment_url": payment["confirmation_url"],
-            "deposit_amount": deposit_amount,
-            "service_price": service["price"],
-            "total_with_commission": total_with_commission,
-            "status": "pending_payment"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        raise HTTPException(500, detail=str(e))
-    finally:
-        conn.close()
-
-# ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ==========
-
-@app.post("/payment-callback")
-def payment_callback(data: dict, conn: sqlite3.Connection = Depends(get_db)):
-    booking_id = data.get("booking_id")
-    payment_id = data.get("payment_id")
-    
-    if not booking_id:
-        return {"status": "error", "message": "booking_id required"}
-    
-    booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
-    if not booking:
-        return {"status": "error", "message": "Booking not found"}
-    
-    if booking["status"] == "confirmed":
-        return {"status": "ok", "message": "Already confirmed"}
-    
-    try:
-        conn.execute("""
-            UPDATE bookings 
-            SET status = 'confirmed', 
-                payment_status = 'paid',
-                confirmed_at = CURRENT_TIMESTAMP,
-                payment_id = ?
-            WHERE id = ?
-        """, (payment_id or booking["payment_id"], booking_id))
-        conn.commit()
-        confirm_booking(booking_id, conn)
-        return {"status": "ok", "message": "Payment confirmed"}
-    except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
-        return {"status": "error", "message": str(e)}
-
-@app.post("/ykassa-webhook")
-async def ykassa_webhook(request: Request, conn: sqlite3.Connection = Depends(get_db)):
-    try:
-        body = await request.body()
-        raw_body = body.decode('utf-8')
-        
-        try:
-            notification = json.loads(raw_body)
-        except:
-            return {"status": "error", "detail": "Invalid JSON"}
-        
-        event_type = notification.get("event")
-        
-        if event_type == "payment.succeeded":
-            metadata = notification.get("object", {}).get("metadata", {})
-            booking_id = metadata.get("booking_id")
-            
-            if booking_id:
-                booking = conn.execute("SELECT id, status FROM bookings WHERE id = ?", (booking_id,)).fetchone()
-                if booking and booking["status"] != "confirmed":
-                    conn.execute("UPDATE bookings SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (booking_id,))
-                    conn.commit()
-                    confirm_booking(booking_id, conn)
-                    logger.info(f"✅ [WEBHOOK] Бронь {booking_id} подтверждена!")
-    except Exception as e:
-        logger.error(f"❌ [WEBHOOK] Ошибка: {e}")
-    
-    return {"status": "ok"}
 
 @app.patch("/bookings/{booking_id}/status")
 def update_booking_status(booking_id: int, status: str, conn: sqlite3.Connection = Depends(get_db)):
@@ -1793,23 +1618,6 @@ async def confirm_booking_by_id(booking_id: int):
     finally:
         conn.close()
 
-@app.get("/test-notification")
-async def test_notification():
-    msg = f"🔔 *ТЕСТ!* 🔔\n\nПривет! Это тестовое уведомление от бота @pinkspotvelur_bot\n\nТвой ID: {ADMIN_CHAT_ID}\nВремя: {datetime.now().strftime('%H:%M:%S')}"
-    result = send_notification_to_admin_sync(msg)
-    if result:
-        return {"status": "ok", "message": f"Уведомление отправлено на ID {ADMIN_CHAT_ID}"}
-    else:
-        return {"status": "error", "message": "Не удалось отправить уведомление"}
-
-@app.get("/test-all-masters")
-async def test_all_masters():
-    conn = get_db()
-    msg = "🔔 *ТЕСТОВОЕ УВЕДОМЛЕНИЕ ВСЕМ МАСТЕРАМ!* 🔔\n\nЭто тестовая рассылка всем мастерам из БД."
-    count = send_notification_to_all_masters(msg, conn)
-    conn.close()
-    return {"status": "ok", "message": f"Уведомления отправлены {count} мастерам"}
-
 @app.get("/health")
 def health_check():
     return {"status": "ok", "timestamp": datetime.now().isoformat()}
@@ -1825,7 +1633,95 @@ async def get_photo(filename: str):
         return FileResponse(file_path)
     raise HTTPException(404, "Photo not found")
 
-# ========== ЗАПУСК (БЕЗ RELOAD ДЛЯ RAILWAY) ==========
+# ========== НАПОМИНАНИЯ ==========
+async def send_reminders():
+    conn = get_db()
+    try:
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        reminders_24h = conn.execute("""
+            SELECT b.*, m.name as master_name, m.address, s.name as service_name
+            FROM bookings b
+            JOIN masters m ON b.master_id = m.id
+            JOIN services s ON b.service_id = s.id
+            WHERE b.status = 'confirmed' AND b.date = ? AND b.reminder_24h_sent = 0
+        """, (tomorrow,)).fetchall()
+        
+        for b in reminders_24h:
+            msg = f"🌸 *Напоминание о записи!* 🌸\n\nЗавтра в *{b['time']}* у вас запись к {b['master_name']} на *{b['service_name']}*.\n📍 Адрес: {b['address']}\n\nЖдём вас! 🎀"
+            await send_telegram_message(b['client_telegram_id'], msg)
+            conn.execute("UPDATE bookings SET reminder_24h_sent = 1 WHERE id = ?", (b['id'],))
+        
+        hour_later = (now + timedelta(hours=1)).strftime("%H:%M")
+        reminders_1h = conn.execute("""
+            SELECT b.*, m.name as master_name, s.name as service_name
+            FROM bookings b
+            JOIN masters m ON b.master_id = m.id
+            JOIN services s ON b.service_id = s.id
+            WHERE b.status = 'confirmed' AND b.date = ? AND b.time = ? AND b.reminder_1h_sent = 0
+        """, (today, hour_later)).fetchall()
+        
+        for b in reminders_1h:
+            msg = f"🌸 *Скоро запись!* 🌸\n\nЧерез час у вас запись к {b['master_name']} на *{b['service_name']}*.\n\nНе опаздывайте! 🚗"
+            await send_telegram_message(b['client_telegram_id'], msg)
+            conn.execute("UPDATE bookings SET reminder_1h_sent = 1 WHERE id = ?", (b['id'],))
+        
+        conn.commit()
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+    finally:
+        conn.close()
+
+async def check_repeat_reminders():
+    conn = get_db()
+    try:
+        bookings = conn.execute("""
+            SELECT b.*, s.name as service_name, m.name as master_name
+            FROM bookings b
+            JOIN services s ON b.service_id = s.id
+            JOIN masters m ON b.master_id = m.id
+            WHERE b.status = 'confirmed' 
+            AND b.date <= date('now', '-20 days')
+            AND b.date >= date('now', '-25 days')
+            AND b.reminder_sent = 0
+        """).fetchall()
+        
+        for b in bookings:
+            days_ago = (datetime.now() - datetime.strptime(b['date'], "%Y-%m-%d")).days
+            msg = f"💅 *Пора повторить!* 💅\n\n{b['service_name']} вы делали {days_ago} дней назад.\n✨ *Время обновить!* Запишитесь прямо сейчас!"
+            await send_telegram_message(b['client_telegram_id'], msg)
+            conn.execute("UPDATE bookings SET reminder_sent = 1 WHERE id = ?", (b['id'],))
+        
+        conn.commit()
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+    finally:
+        conn.close()
+
+async def run_background_tasks():
+    while True:
+        await send_reminders()
+        await asyncio.sleep(1800)
+
+async def run_daily_tasks():
+    while True:
+        await check_repeat_reminders()
+        await asyncio.sleep(86400)
+
+# ========== LIFESPAN ==========
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("🚀 Запуск фоновых задач...")
+    asyncio.create_task(run_background_tasks())
+    asyncio.create_task(run_daily_tasks())
+    logger.info("✅ Фоновые задачи запущены")
+    yield
+    logger.info("🛑 Остановка фоновых задач...")
+
+app = FastAPI(title="Beauty Bot API", version="3.0.0", lifespan=lifespan)
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
