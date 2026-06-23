@@ -138,6 +138,11 @@ class WaitlistIn(BaseModel):
     desired_date: Optional[str] = None
     desired_time: Optional[str] = None
 
+class MasterChatRegister(BaseModel):
+    telegram_id: str
+    chat_id: str
+    user_id: str
+
 # ========== БД ==========
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -302,6 +307,16 @@ def init_db():
         FOREIGN KEY (service_id) REFERENCES services(id)
     )""")
     
+    # ✅ НОВАЯ ТАБЛИЦА ДЛЯ ХРАНЕНИЯ CHAT_ID МАСТЕРОВ
+    c.execute("""CREATE TABLE IF NOT EXISTS master_chats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        master_id INTEGER,
+        chat_id TEXT UNIQUE,
+        user_id TEXT,
+        last_active TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (master_id) REFERENCES masters(id)
+    )""")
+    
     for col in ['reminder_24h_sent', 'reminder_1h_sent', 'reminder_sent']:
         try:
             c.execute(f"ALTER TABLE bookings ADD COLUMN {col} INTEGER DEFAULT 0")
@@ -419,10 +434,16 @@ async def send_telegram_message(chat_id: str, message: str, parse_mode: str = "M
             )
             if response.status_code == 200:
                 logger.info(f"✅ Сообщение отправлено в Telegram: {chat_id}")
+                return True
+            elif response.status_code == 403:
+                logger.error(f"❌ Forbidden: бот не может писать {chat_id}")
+                return False
             else:
                 logger.error(f"❌ Ошибка: {response.status_code}")
+                return False
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
+        return False
 
 def send_telegram_message_sync(chat_id: str, message: str, parse_mode: str = "Markdown"):
     try:
@@ -433,37 +454,70 @@ def send_telegram_message_sync(chat_id: str, message: str, parse_mode: str = "Ma
         )
         if response.status_code == 200:
             logger.info(f"✅ Сообщение отправлено в Telegram: {chat_id}")
+            return True
+        elif response.status_code == 403:
+            logger.error(f"❌ Forbidden: бот не может писать {chat_id}")
+            return False
         else:
             logger.error(f"❌ Ошибка: {response.status_code} - {response.text}")
+            return False
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
+        return False
 
-# ========== АВТОМАТИЧЕСКИЕ УВЕДОМЛЕНИЯ ВСЕМ МАСТЕРАМ ИЗ БД ==========
-def get_all_masters_telegram_ids(conn):
-    """Автоматически получает Telegram ID всех мастеров из БД"""
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С CHAT_ID ==========
+def get_master_chat_id(master_id, conn):
+    """Получить правильный chat_id мастера"""
     try:
-        masters = conn.execute(
-            "SELECT id, name, telegram_id FROM masters WHERE telegram_id IS NOT NULL AND telegram_id != ''"
-        ).fetchall()
-        return [dict(m) for m in masters]
+        result = conn.execute(
+            "SELECT chat_id FROM master_chats WHERE master_id = ? ORDER BY last_active DESC LIMIT 1",
+            (master_id,)
+        ).fetchone()
+        return result["chat_id"] if result else None
     except Exception as e:
-        logger.error(f"❌ Ошибка получения мастеров: {e}")
+        logger.error(f"❌ Ошибка получения chat_id: {e}")
+        return None
+
+def get_all_masters_chat_ids(conn):
+    """Получить все chat_id мастеров из БД"""
+    try:
+        results = conn.execute(
+            "SELECT mc.chat_id, m.id, m.name FROM master_chats mc JOIN masters m ON mc.master_id = m.id ORDER BY mc.last_active DESC"
+        ).fetchall()
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения chat_id: {e}")
         return []
 
-def send_notification_to_all_masters(message: str, conn):
-    """Автоматически отправляет уведомление ВСЕМ мастерам из БД"""
+def update_master_chat_id(master_id, chat_id, user_id, conn):
+    """Обновить chat_id мастера при взаимодействии"""
     try:
-        masters = get_all_masters_telegram_ids(conn)
+        conn.execute("""
+            INSERT OR REPLACE INTO master_chats (master_id, chat_id, user_id, last_active)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        """, (master_id, chat_id, user_id))
+        conn.commit()
+        logger.info(f"✅ Обновлён chat_id для мастера {master_id}: {chat_id}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка обновления chat_id: {e}")
+        return False
+
+# ========== АВТОМАТИЧЕСКИЕ УВЕДОМЛЕНИЯ ВСЕМ МАСТЕРАМ ==========
+def send_notification_to_all_masters(message: str, conn):
+    """Отправляет уведомление ВСЕМ мастерам по их chat_id"""
+    try:
+        masters = get_all_masters_chat_ids(conn)
         if not masters:
-            logger.warning("⚠️ Нет мастеров в БД")
+            logger.warning("⚠️ Нет chat_id мастеров в БД")
             return 0
         
         sent_count = 0
         for master in masters:
-            if master.get("telegram_id"):
-                send_telegram_message_sync(master["telegram_id"], message)
+            if master.get("chat_id"):
+                send_telegram_message_sync(master["chat_id"], message)
                 sent_count += 1
-                logger.info(f"✅ Уведомление отправлено мастеру {master['name']}")
+                logger.info(f"✅ Уведомление отправлено мастеру {master['name']} (chat_id: {master['chat_id']})")
         
         logger.info(f"✅ Уведомления отправлены {sent_count} мастерам")
         return sent_count
@@ -553,8 +607,10 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
                     (booking_id, master["id"], booking["client_telegram_id"], master["telegram_id"], token))
         conn.commit()
         
-        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ
-        master_msg = f"""🌸 *НОВАЯ ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸
+        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ (по chat_id)
+        master_chat_id = get_master_chat_id(master["id"], conn)
+        if master_chat_id:
+            master_msg = f"""🌸 *НОВАЯ ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸
 
 👩 {booking['client_name']}
 📞 {booking['client_phone'] or 'не указан'}
@@ -562,9 +618,9 @@ def confirm_booking(booking_id: int, conn: sqlite3.Connection):
 💰 {service['price']} ₽
 💸 Депозит: {booking['deposit_amount']} ₽
 📅 {booking['date']} в {booking['time']}"""
-        
-        if master.get("telegram_id"):
-            send_telegram_message_sync(master["telegram_id"], master_msg)
+            send_telegram_message_sync(master_chat_id, master_msg)
+        else:
+            logger.warning(f"⚠️ Нет chat_id для мастера {master['id']}")
         
         # ✅ УВЕДОМЛЕНИЕ КЛИЕНТУ
         client_msg = f"""🌸 *ЗАПИСЬ ПОДТВЕРЖДЕНА!* 🌸
@@ -686,6 +742,29 @@ async def run_daily_tasks():
     while True:
         await check_repeat_reminders()
         await asyncio.sleep(86400)
+
+# ========== ЭНДПОИНТ ДЛЯ РЕГИСТРАЦИИ CHAT_ID МАСТЕРА ==========
+@app.post("/master/register-chat")
+def register_master_chat(data: MasterChatRegister, conn: sqlite3.Connection = Depends(get_db)):
+    """Мастер взаимодействует с ботом - сохраняем chat_id"""
+    try:
+        telegram_id = data.telegram_id
+        chat_id = data.chat_id
+        user_id = data.user_id
+        
+        if not telegram_id or not chat_id:
+            return {"status": "error", "message": "telegram_id и chat_id обязательны"}
+        
+        master = conn.execute("SELECT id FROM masters WHERE telegram_id = ?", (telegram_id,)).fetchone()
+        if not master:
+            return {"status": "error", "message": "Мастер не найден в системе"}
+        
+        update_master_chat_id(master["id"], chat_id, user_id, conn)
+        
+        return {"status": "ok", "message": f"Chat_id {chat_id} сохранён для мастера {master['id']}"}
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        return {"status": "error", "message": str(e)}
 
 # ========== ОСНОВНЫЕ ЭНДПОИНТЫ ==========
 
@@ -818,9 +897,13 @@ async def create_booking(data: BookingIn):
         conn.execute("UPDATE bookings SET payment_id=? WHERE id=?", (payment["payment_id"], booking_id))
         conn.commit()
         
-        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ
-        master_msg = f"💳 *НОВАЯ ЗАЯВКА* 💳\n\n👩 {data.client_name}\n📞 {data.client_phone or 'не указан'}\n💅 {service['name']}\n💰 {service['price']} ₽\n💸 Депозит: {deposit_amount} ₽\n📅 {data.date} в {data.time}"
-        asyncio.create_task(send_telegram_message(master["telegram_id"], master_msg))
+        # ✅ УВЕДОМЛЕНИЕ МАСТЕРУ (по chat_id)
+        master_chat_id = get_master_chat_id(master["id"], conn)
+        if master_chat_id:
+            master_msg = f"💳 *НОВАЯ ЗАЯВКА* 💳\n\n👩 {data.client_name}\n📞 {data.client_phone or 'не указан'}\n💅 {service['name']}\n💰 {service['price']} ₽\n💸 Депозит: {deposit_amount} ₽\n📅 {data.date} в {data.time}"
+            asyncio.create_task(send_telegram_message(master_chat_id, master_msg))
+        else:
+            logger.warning(f"⚠️ Нет chat_id для мастера {master['id']}")
         
         # ✅ АВТОМАТИЧЕСКОЕ УВЕДОМЛЕНИЕ ВСЕМ МАСТЕРАМ
         all_masters_msg = f"""💳 *НОВАЯ ЗАЯВКА НА ЗАПИСЬ!* 💳
